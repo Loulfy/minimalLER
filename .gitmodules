@@ -1,0 +1,6 @@
+[submodule "libs/VulkanMemoryAllocator-Hpp"]
+	path = libs/VulkanMemoryAllocator-Hpp
+	url = https://github.com/YaaZ/VulkanMemoryAllocator-Hpp
+[submodule "libs/SPIRV-Reflect"]
+	path = libs/SPIRV-Reflect
+	url = https://github.com/KhronosGroup/SPIRV-Reflect
