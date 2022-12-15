@@ -1,0 +1,8 @@
+[requires]
+glfw/3.3.8
+stb/cci.20210910
+glm/cci.20220420
+assimp/5.2.2
+
+[generators]
+cmake
