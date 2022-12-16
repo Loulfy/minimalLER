@@ -8,6 +8,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#define SPIRV_REFLECT_HAS_VULKAN_H
+#include <spirv_reflect.h>
+
 namespace ler
 {
     static const std::array<vk::Format,5> c_depthFormats =
@@ -19,9 +22,19 @@ namespace ler
         vk::Format::eD16Unorm
     };
 
+    static const std::array<std::set<std::string>, 5> c_VertexAttrMap =
+    {{
+             {"inPos"},
+             {"inTex", "inUV"},
+             {"inNormal"},
+             {"inTangent"},
+             {"inColor"}
+     }};
+
     LerContext::LerContext(const LerSettings& settings)
     {
         m_device = settings.device;
+        m_pipelineCache = settings.pipelineCache;
         m_physicalDevice = settings.physicalDevice;
         m_queue = settings.device.getQueue(settings.graphicsQueueFamily, 0);
 
@@ -147,7 +160,7 @@ namespace ler
         return ret;
     }
 
-    vk::ImageAspectFlags guessImageAspectFlags(vk::Format format)
+    vk::ImageAspectFlags LerContext::guessImageAspectFlags(vk::Format format)
     {
         switch(format)
         {
@@ -284,6 +297,19 @@ namespace ler
                 return format;
         }
         return vk::Format::eD32Sfloat;
+    }
+
+    std::vector<char> LerContext::loadBinaryFromFile(const fs::path& path)
+    {
+        std::vector<char> v;
+        std::ifstream file(path, std::ios::binary);
+        std::stringstream src;
+        src << file.rdbuf();
+        file.close();
+
+        auto s = src.str();
+        std::copy( s.begin(), s.end(), std::back_inserter(v));
+        return v;
     }
 
     SwapChain LerContext::createSwapChain(vk::SurfaceKHR surface, uint32_t width, uint32_t height, bool vSync)
@@ -426,6 +452,9 @@ namespace ler
             .setColorAttachments(colorAttachmentRef1)
             .setPDepthStencilAttachment(&depthAttachmentRef);
 
+        for(auto& output : colorAttachmentRef1)
+            renderPass.subPass[0].insert(output.attachment);
+
         // SECOND PASS
         subPass[1] = vk::SubpassDescription2()
             .setPipelineBindPoint(vk::PipelineBindPoint::eGraphics)
@@ -434,6 +463,9 @@ namespace ler
                     //.setPResolveAttachments(&resolveAttachmentRef)
                     //.setPDepthStencilAttachment(&depthAttachmentRef)
             .setInputAttachments(colorInputRef);
+
+        for(auto& output : colorAttachmentRef2)
+            renderPass.subPass[1].insert(output.attachment);
 
         // DEPENDENCIES
         std::array<vk::SubpassDependency2, 1> dependencies;
@@ -482,6 +514,336 @@ namespace ler
         }
 
         return frameBuffers;
+    }
+
+    uint32_t guessVertexInputBinding(const char* name)
+    {
+        for(size_t i = 0; i < c_VertexAttrMap.size(); ++i)
+            if(c_VertexAttrMap[i].contains(name))
+                return i;
+        throw std::runtime_error("Vertex Input Attribute not reserved");
+    }
+
+    ShaderPtr LerContext::createShader(const fs::path& path)
+    {
+        auto shader = std::make_shared<Shader>();
+        auto bytecode = loadBinaryFromFile(path);
+        vk::ShaderModuleCreateInfo shaderInfo;
+        shaderInfo.setCodeSize(bytecode.size());
+        shaderInfo.setPCode(reinterpret_cast<const uint32_t*>(bytecode.data()));
+        shader->shaderModule = m_device.createShaderModuleUnique(shaderInfo);
+
+        uint32_t count = 0;
+        SpvReflectShaderModule module;
+        SpvReflectResult result = spvReflectCreateShaderModule(bytecode.size(), bytecode.data(), &module);
+        assert(result == SPV_REFLECT_RESULT_SUCCESS);
+        assert(module.generator == SPV_REFLECT_GENERATOR_KHRONOS_GLSLANG_REFERENCE_FRONT_END);
+
+        shader->stageFlagBits = static_cast<vk::ShaderStageFlagBits>(module.shader_stage);
+        //log::info("Reflect Shader Stage {}", vk::to_string(handle->stageFlagBits));
+
+        // Input Variables
+        result = spvReflectEnumerateInputVariables(&module, &count, nullptr);
+        assert(result == SPV_REFLECT_RESULT_SUCCESS);
+
+        std::vector<SpvReflectInterfaceVariable*> inputs(count);
+        result = spvReflectEnumerateInputVariables(&module, &count, inputs.data());
+        assert(result == SPV_REFLECT_RESULT_SUCCESS);
+
+        std::set<uint32_t> availableBinding;
+        if (module.shader_stage == SPV_REFLECT_SHADER_STAGE_VERTEX_BIT)
+        {
+            for(auto& in : inputs)
+            {
+                if(in->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN)
+                    continue;
+
+                uint32_t binding = guessVertexInputBinding(in->name);
+                shader->attributeDesc.emplace_back(in->location, binding, static_cast<vk::Format>(in->format), 0);
+                //log::info("location = {}, binding = {}, name = {}", in->location, binding, in->name);
+                if(!availableBinding.contains(binding))
+                {
+                    shader->bindingDesc.emplace_back(binding, 0, vk::VertexInputRate::eVertex);
+                    availableBinding.insert(binding);
+                }
+            }
+
+            std::sort(shader->attributeDesc.begin(), shader->attributeDesc.end(),
+                [](const VkVertexInputAttributeDescription& a, const VkVertexInputAttributeDescription& b) {
+                    return a.location < b.location;
+            });
+
+            // Compute final offsets of each attribute, and total vertex stride.
+            for (size_t i = 0; i < shader->attributeDesc.size(); ++i)
+            {
+                uint32_t format_size = formatSize(static_cast<VkFormat>(shader->attributeDesc[i].format));
+                shader->attributeDesc[i].offset = shader->bindingDesc[i].stride;
+                shader->bindingDesc[i].stride += format_size;
+            }
+        }
+
+        shader->pvi = vk::PipelineVertexInputStateCreateInfo();
+        shader->pvi.setVertexAttributeDescriptions(shader->attributeDesc);
+        shader->pvi.setVertexBindingDescriptions(shader->bindingDesc);
+
+        // Push Constants
+        result = spvReflectEnumeratePushConstantBlocks(&module, &count, nullptr);
+        assert(result == SPV_REFLECT_RESULT_SUCCESS);
+
+        std::vector<SpvReflectBlockVariable*> constants(count);
+        result = spvReflectEnumeratePushConstantBlocks(&module, &count, constants.data());
+        assert(result == SPV_REFLECT_RESULT_SUCCESS);
+
+        for(auto& block : constants)
+            shader->pushConstants.emplace_back(shader->stageFlagBits, block->offset, block->size);
+
+        // Descriptor Set
+        result = spvReflectEnumerateDescriptorSets(&module, &count, nullptr);
+        assert(result == SPV_REFLECT_RESULT_SUCCESS);
+
+        std::vector<SpvReflectDescriptorSet*> sets(count);
+        result = spvReflectEnumerateDescriptorSets(&module, &count, sets.data());
+        assert(result == SPV_REFLECT_RESULT_SUCCESS);
+
+        for(auto& set : sets)
+        {
+            DescriptorSetLayoutData desc;
+            desc.set_number = set->set;
+            desc.bindings.resize(set->binding_count);
+            for(size_t i = 0; i < set->binding_count; ++i)
+            {
+                auto& binding = desc.bindings[i];
+                binding.binding = set->bindings[i]->binding;
+                binding.descriptorCount = set->bindings[i]->count;
+                binding.descriptorType = static_cast<vk::DescriptorType>(set->bindings[i]->descriptor_type);
+                binding.stageFlags = shader->stageFlagBits;
+                //log::info("set = {}, binding = {}, count = {:02}, type = {}", set->set, binding.binding, binding.descriptorCount, vk::to_string(binding.descriptorType));
+            }
+            shader->descriptorMap.insert({set->set, desc});
+        }
+
+        spvReflectDestroyShaderModule(&module);
+        return shader;
+    }
+
+    void BasePipeline::reflectPipelineLayout(vk::Device device, const std::vector<ShaderPtr>& shaders)
+    {
+        // PIPELINE LAYOUT STATE
+        auto layoutInfo = vk::PipelineLayoutCreateInfo();
+        std::vector<vk::PushConstantRange> pushConstants;
+        for(auto& shader : shaders)
+            pushConstants.insert(pushConstants.end(), shader->pushConstants.begin(), shader->pushConstants.end());
+        layoutInfo.setPushConstantRanges(pushConstants);
+
+        // SHADER REFLECT
+        std::set<uint32_t> sets;
+        std::vector<vk::DescriptorPoolSize> descriptorPoolSizeInfo;
+        std::multimap<uint32_t,DescriptorSetLayoutData> mergedDesc;
+        for(auto& shader : shaders)
+            mergedDesc.merge(shader->descriptorMap);
+
+        for(auto& e : mergedDesc)
+            sets.insert(e.first);
+
+        std::vector<vk::DescriptorSetLayout> setLayouts;
+        setLayouts.reserve(sets.size());
+        for(auto& set : sets)
+        {
+            descriptorPoolSizeInfo.clear();
+            auto it = descriptorAllocMap.emplace(set, DescriptorAllocator());
+            auto& allocator = std::get<0>(it)->second;
+
+            auto descriptorPoolInfo = vk::DescriptorPoolCreateInfo();
+            auto descriptorLayoutInfo = vk::DescriptorSetLayoutCreateInfo();
+            auto range = mergedDesc.equal_range(set);
+            for (auto e = range.first; e != range.second; ++e)
+                allocator.layoutBinding.insert(allocator.layoutBinding.end(), e->second.bindings.begin(), e->second.bindings.end());
+            descriptorLayoutInfo.setBindings(allocator.layoutBinding);
+            for(auto& b : allocator.layoutBinding)
+                descriptorPoolSizeInfo.emplace_back(b.descriptorType, b.descriptorCount);
+            descriptorPoolInfo.setPoolSizes(descriptorPoolSizeInfo);
+            descriptorPoolInfo.setMaxSets(3);
+            allocator.pool = device.createDescriptorPoolUnique(descriptorPoolInfo);
+            allocator.layout = device.createDescriptorSetLayoutUnique(descriptorLayoutInfo);
+            setLayouts.push_back(allocator.layout.get());
+        }
+
+        layoutInfo.setSetLayouts(setLayouts);
+        pipelineLayout = device.createPipelineLayoutUnique(layoutInfo);
+    }
+
+    vk::DescriptorSet BasePipeline::createDescriptorSet(uint32_t set)
+    {
+        if(!descriptorAllocMap.contains(set))
+            return {};
+
+        vk::Result res;
+        vk::DescriptorSet descriptorSet;
+        const auto& allocator = descriptorAllocMap[set];
+        vk::DescriptorSetAllocateInfo descriptorSetAllocInfo;
+        descriptorSetAllocInfo.setDescriptorSetCount(1);
+        descriptorSetAllocInfo.setDescriptorPool(allocator.pool.get());
+        descriptorSetAllocInfo.setPSetLayouts(&allocator.layout.get());
+        //res = m_context.device.allocateDescriptorSets(&descriptorSetAllocInfo,&descriptorSet);
+        assert(res == vk::Result::eSuccess);
+        return descriptorSet;
+    }
+
+    void addShaderStage(std::vector<vk::PipelineShaderStageCreateInfo>& stages, const ShaderPtr& shader)
+    {
+        stages.emplace_back(
+            vk::PipelineShaderStageCreateFlags(),
+            shader->stageFlagBits,
+            shader->shaderModule.get(),
+            "main",
+            nullptr
+        );
+    }
+
+    PipelinePtr LerContext::createGraphicsPipeline(const RenderPass& renderPass, const std::vector<ShaderPtr>& shaders, const PipelineInfo& info)
+    {
+        auto pipeline = std::make_shared<GraphicsPipeline>();
+        std::vector<vk::PipelineShaderStageCreateInfo> pipelineShaderStages;
+        for(auto& shader : shaders)
+            addShaderStage(pipelineShaderStages, shader);
+
+        // TOPOLOGY STATE
+        vk::PipelineInputAssemblyStateCreateInfo pia(vk::PipelineInputAssemblyStateCreateFlags(), info.topology);
+
+        // VIEWPORT STATE
+        auto viewport = vk::Viewport(0, 0, static_cast<float>(info.extent.width), static_cast<float>(info.extent.height), 0, 1.0f);
+        auto renderArea = vk::Rect2D(vk::Offset2D(), info.extent);
+
+        vk::PipelineViewportStateCreateInfo pv(vk::PipelineViewportStateCreateFlagBits(), 1, &viewport, 1, &renderArea);
+
+        // Multi Sampling STATE
+        vk::PipelineMultisampleStateCreateInfo pm(vk::PipelineMultisampleStateCreateFlags(), info.sampleCount);
+
+        // POLYGON STATE
+        vk::PipelineRasterizationStateCreateInfo pr;
+        pr.setDepthClampEnable(VK_TRUE);
+        pr.setRasterizerDiscardEnable(VK_FALSE);
+        pr.setPolygonMode(info.polygonMode);
+        pr.setFrontFace(vk::FrontFace::eCounterClockwise);
+        pr.setDepthBiasEnable(VK_FALSE);
+        pr.setDepthBiasConstantFactor(0.f);
+        pr.setDepthBiasClamp(0.f);
+        pr.setDepthBiasSlopeFactor(0.f);
+        pr.setLineWidth(1.f);
+
+        // DEPTH & STENCIL STATE
+        vk::PipelineDepthStencilStateCreateInfo pds;
+        pds.setDepthTestEnable(VK_TRUE);
+        pds.setDepthWriteEnable(info.writeDepth);
+        pds.setDepthCompareOp(vk::CompareOp::eLessOrEqual);
+        pds.setDepthBoundsTestEnable(VK_FALSE);
+        pds.setStencilTestEnable(VK_FALSE);
+        pds.setFront(vk::StencilOpState());
+        pds.setBack(vk::StencilOpState());
+        pds.setMinDepthBounds(0.f);
+        pds.setMaxDepthBounds(1.f);
+
+        // BLEND STATE
+        std::vector<vk::PipelineColorBlendAttachmentState> colorBlendAttachments;
+        vk::PipelineColorBlendAttachmentState pcb;
+        pcb.setBlendEnable(VK_TRUE); // false
+        pcb.setSrcColorBlendFactor(vk::BlendFactor::eSrcAlpha); //one //srcAlpha
+        pcb.setDstColorBlendFactor(vk::BlendFactor::eOneMinusSrcAlpha); //one //oneminussrcalpha
+        pcb.setColorBlendOp(vk::BlendOp::eAdd);
+        pcb.setSrcAlphaBlendFactor(vk::BlendFactor::eOneMinusSrcAlpha); //one //oneminussrcalpha
+        pcb.setDstAlphaBlendFactor(vk::BlendFactor::eZero); //zero
+        pcb.setAlphaBlendOp(vk::BlendOp::eAdd);
+        pcb.setColorWriteMask(
+                vk::ColorComponentFlagBits::eR |
+                vk::ColorComponentFlagBits::eG |
+                vk::ColorComponentFlagBits::eB |
+                vk::ColorComponentFlagBits::eA);
+
+        for(auto& id : renderPass.subPass[info.subPass])
+        {
+            auto& attachment = renderPass.attachments[id];
+            if(guessImageAspectFlags(attachment.format) == vk::ImageAspectFlagBits::eColor)
+                colorBlendAttachments.push_back(pcb);
+        }
+
+        vk::PipelineColorBlendStateCreateInfo pbs;
+        pbs.setLogicOpEnable(VK_FALSE);
+        pbs.setLogicOp(vk::LogicOp::eClear);
+        pbs.setAttachments(colorBlendAttachments);
+
+        // DYNAMIC STATE
+        std::vector<vk::DynamicState> dynamicStates =
+        {
+            vk::DynamicState::eViewport,
+            vk::DynamicState::eScissor
+        };
+
+        vk::PipelineDynamicStateCreateInfo pdy(vk::PipelineDynamicStateCreateFlags(), dynamicStates);
+
+        // PIPELINE LAYOUT STATE
+        auto layoutInfo = vk::PipelineLayoutCreateInfo();
+        std::vector<vk::PushConstantRange> pushConstants;
+        for(auto& shader : shaders)
+            pushConstants.insert(pushConstants.end(), shader->pushConstants.begin(), shader->pushConstants.end());
+        layoutInfo.setPushConstantRanges(pushConstants);
+
+        // SHADER REFLECT
+        vk::PipelineVertexInputStateCreateInfo pvi;
+        for(auto& shader : shaders)
+        {
+            if(shader->stageFlagBits == vk::ShaderStageFlagBits::eVertex)
+                pvi = shader->pvi;
+            if(shader->stageFlagBits == vk::ShaderStageFlagBits::eFragment)
+            {
+                for(auto& e : shader->descriptorMap)
+                {
+                    for(auto& bind : e.second.bindings)
+                        if(bind.descriptorCount == 0 && bind.descriptorType == vk::DescriptorType::eCombinedImageSampler)
+                            bind.descriptorCount = info.textureCount;
+                }
+            }
+        }
+
+        pipeline->reflectPipelineLayout(m_device, shaders);
+
+        auto pipelineInfo = vk::GraphicsPipelineCreateInfo();
+        pipelineInfo.setRenderPass(renderPass.handle.get());
+        pipelineInfo.setLayout(pipeline->pipelineLayout.get());
+        pipelineInfo.setStages(pipelineShaderStages);
+        pipelineInfo.setPVertexInputState(&pvi);
+        pipelineInfo.setPInputAssemblyState(&pia);
+        pipelineInfo.setPViewportState(&pv);
+        pipelineInfo.setPRasterizationState(&pr);
+        pipelineInfo.setPMultisampleState(&pm);
+        pipelineInfo.setPDepthStencilState(&pds);
+        pipelineInfo.setPColorBlendState(&pbs);
+        pipelineInfo.setPDynamicState(&pdy);
+        pipelineInfo.setSubpass(info.subPass);
+
+        auto res = m_device.createGraphicsPipelineUnique(m_pipelineCache, pipelineInfo);
+        assert(res.result == vk::Result::eSuccess);
+        pipeline->handle = std::move(res.value);
+        return pipeline;
+    }
+
+    PipelinePtr LerContext::createComputePipeline(const ShaderPtr& shader)
+    {
+        auto pipeline = std::make_shared<ComputePipeline>();
+        std::vector<vk::PipelineShaderStageCreateInfo> pipelineShaderStages;
+        addShaderStage(pipelineShaderStages, shader);
+
+        std::vector<ShaderPtr> shaders = { shader };
+        pipeline->reflectPipelineLayout(m_device, shaders);
+
+        auto pipelineInfo = vk::ComputePipelineCreateInfo();
+        pipelineInfo.setStage(pipelineShaderStages.front());
+        pipelineInfo.setLayout(pipeline->pipelineLayout.get());
+
+        auto res = m_device.createComputePipelineUnique(m_pipelineCache, pipelineInfo);
+        pipeline->bindPoint = vk::PipelineBindPoint::eCompute;
+        assert(res.result == vk::Result::eSuccess);
+        pipeline->handle = std::move(res.value);
+        return pipeline;
     }
 
     uint32_t LerContext::loadTextureFromFile(const fs::path& path)

@@ -24,5 +24,5 @@ include_directories(libs/VulkanMemoryAllocator-Hpp/VulkanMemoryAllocator/include
 
 add_definitions(-DPROJECT_DIR=\"${PROJECT_SOURCE_DIR}\")
 
-add_executable(minimalRT src/main.cpp src/ler.hpp src/ler.cpp)
-target_link_libraries(minimalRT Vulkan::Vulkan ${CONAN_LIBS})
+add_executable(minimalRT src/main.cpp src/ler.hpp src/ler.cpp src/format.cpp)
+target_link_libraries(minimalRT Vulkan::Vulkan ${CONAN_LIBS} spirv-reflect-static)

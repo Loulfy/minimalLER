@@ -2,8 +2,8 @@
 // Created by loulfy on 14/12/2022.
 //
 
-#ifndef MINIMALRT_LER_HPP
-#define MINIMALRT_LER_HPP
+#ifndef LER_HPP
+#define LER_HPP
 
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
@@ -16,11 +16,14 @@
 #include <glm/gtx/string_cast.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <set>
 #include <map>
+#include <span>
 #include <list>
 #include <mutex>
 #include <memory>
 #include <limits>
+#include <fstream>
 #include <iostream>
 #include <functional>
 #include <filesystem>
@@ -60,6 +63,70 @@ namespace ler
     {
         vk::UniqueRenderPass handle;
         std::vector<vk::AttachmentDescription2> attachments;
+        std::array<std::set<uint32_t>, 4> subPass;
+    };
+
+    struct DescriptorSetLayoutData
+    {
+        uint32_t set_number = 0;
+        VkDescriptorSetLayoutCreateInfo create_info;
+        std::vector<vk::DescriptorSetLayoutBinding> bindings;
+    };
+
+    struct Shader
+    {
+        vk::UniqueShaderModule shaderModule;
+        vk::ShaderStageFlagBits stageFlagBits = {};
+        vk::PipelineVertexInputStateCreateInfo pvi;
+        std::vector<vk::PushConstantRange> pushConstants;
+        std::map<uint32_t, DescriptorSetLayoutData> descriptorMap;
+        std::vector<vk::VertexInputBindingDescription> bindingDesc;
+        std::vector<vk::VertexInputAttributeDescription> attributeDesc;
+    };
+
+    using ShaderPtr = std::shared_ptr<Shader>;
+
+    struct DescriptorAllocator
+    {
+        std::vector<vk::DescriptorSetLayoutBinding> layoutBinding;
+        vk::UniqueDescriptorSetLayout layout;
+        vk::UniqueDescriptorPool pool;
+    };
+
+    struct PipelineInfo
+    {
+        vk::Extent2D extent;
+        vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList;
+        vk::PolygonMode polygonMode = vk::PolygonMode::eFill;
+        vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1;
+        uint32_t textureCount = 1;
+        bool writeDepth = true;
+        uint32_t subPass = 0;
+    };
+
+    class BasePipeline
+    {
+    public:
+
+        void reflectPipelineLayout(vk::Device device, const std::vector<ShaderPtr>& shaders);
+        vk::DescriptorSet createDescriptorSet(uint32_t set);
+
+        vk::UniquePipeline handle;
+        vk::UniquePipelineLayout pipelineLayout;
+        vk::PipelineBindPoint bindPoint = vk::PipelineBindPoint::eGraphics;
+        std::unordered_map<uint32_t,DescriptorAllocator> descriptorAllocMap;
+    };
+
+    using PipelinePtr = std::shared_ptr<BasePipeline>;
+
+    class GraphicsPipeline : public BasePipeline
+    {
+
+    };
+
+    class ComputePipeline : public BasePipeline
+    {
+
     };
 
     struct Instance
@@ -117,6 +184,7 @@ namespace ler
         vk::PhysicalDevice physicalDevice;
         vk::Device device;
         uint32_t graphicsQueueFamily = UINT32_MAX;
+        vk::PipelineCache pipelineCache;
     };
 
     class LerContext
@@ -137,12 +205,18 @@ namespace ler
         TexturePtr createTextureFromNative(vk::Image image, vk::Format format, const vk::Extent2D& extent);
         uint32_t loadTextureFromFile(const fs::path& path);
         uint32_t loadTextureFromMemory(const unsigned char* buffer, uint32_t size);
+        static vk::ImageAspectFlags guessImageAspectFlags(vk::Format format);
 
         SwapChain createSwapChain(vk::SurfaceKHR surface, uint32_t width, uint32_t height, bool vSync = true);
 
         // RenderPass
         RenderPass createDefaultRenderPass(vk::Format surfaceFormat);
         std::vector<vk::UniqueFramebuffer> createFrameBuffers(const RenderPass& renderPass, const SwapChain& swapChain);
+
+        // Pipeline
+        ShaderPtr createShader(const fs::path& path);
+        PipelinePtr createGraphicsPipeline(const RenderPass& renderPass, const std::vector<ShaderPtr>& shaders, const PipelineInfo& info);
+        PipelinePtr createComputePipeline(const ShaderPtr& shader);
 
         // Scene
         Scene fromFile(const fs::path& path);
@@ -158,6 +232,8 @@ namespace ler
         static vk::PresentModeKHR chooseSwapPresentMode(const std::vector<vk::PresentModeKHR>& availablePresentModes, bool vSync);
         static vk::SurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& availableFormats);
         static vk::Extent2D chooseSwapExtent(const vk::SurfaceCapabilitiesKHR& capabilities, uint32_t width, uint32_t height);
+        static std::vector<char> loadBinaryFromFile(const fs::path& path);
+        static uint32_t formatSize(VkFormat format);
         vk::Format chooseDepthFormat();
         uint32_t loadTexture(const aiScene* aiScene, const aiString& filename, const fs::path& path);
 
@@ -166,6 +242,7 @@ namespace ler
         vk::Device m_device;
         vk::Queue m_queue;
         vma::Allocator m_allocator;
+        vk::PipelineCache m_pipelineCache;
         vk::UniqueCommandPool m_commandPool;
         std::list<vk::CommandBuffer> m_commandBuffersPool;
 
@@ -174,4 +251,4 @@ namespace ler
     };
 }
 
-#endif //MINIMALRT_LER_HPP
+#endif //LER_HPP

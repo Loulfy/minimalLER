@@ -104,10 +104,13 @@ int main()
 
     vk::UniqueSurfaceKHR surface = vk::UniqueSurfaceKHR(vk::SurfaceKHR(glfwSurface), { instance.get() });
 
+    vk::UniquePipelineCache pipelineCache = device->createPipelineCacheUnique({});
+
     ler::LerSettings config;
     config.device = device.get();
     config.instance = instance.get();
     config.physicalDevice = physicalDevice;
+    config.pipelineCache = pipelineCache.get();
     config.graphicsQueueFamily = graphicsQueueFamily;
     ler::LerContext engine(config);
 
@@ -119,16 +122,30 @@ int main()
     auto renderPass = engine.createDefaultRenderPass(swapChain.format);
     auto frameBuffers = engine.createFrameBuffers(renderPass, swapChain);
 
+    vk::Viewport viewport(0, 0, static_cast<float>(swapChain.extent.width), static_cast<float>(swapChain.extent.height), 0, 1.0f);
+    vk::Rect2D renderArea(vk::Offset2D(), swapChain.extent);
+
+    std::vector<ler::ShaderPtr> shaders;
+    shaders.push_back(engine.createShader(ASSETS / "shaders" / "quad.vert.spv"));
+    shaders.push_back(engine.createShader(ASSETS / "shaders" / "quad.frag.spv"));
+
+    ler::PipelineInfo info;
+    info.subPass = 1;
+    info.extent = swapChain.extent;
+    info.sampleCount = vk::SampleCountFlagBits::e8;
+    info.topology = vk::PrimitiveTopology::eTriangleStrip;
+    auto quad = engine.createGraphicsPipeline(renderPass, shaders, info);
+
     std::array<float, 4> color = {1.f, 1.f, 1.f, 1.f};
-    std::vector<vk::ClearValue> clearValues =
+    std::vector<vk::ClearValue> clearValues;
+    for(const auto& attachment : renderPass.attachments)
     {
-        vk::ClearColorValue(color),
-        vk::ClearColorValue(color),
-        vk::ClearColorValue(color),
-        vk::ClearDepthStencilValue(1.0f, 0),
-        vk::ClearColorValue(color),
-        vk::ClearColorValue(color),
-    };
+        auto aspect = ler::LerContext::guessImageAspectFlags(attachment.format);
+        if(aspect == vk::ImageAspectFlagBits::eColor)
+            clearValues.emplace_back(vk::ClearColorValue(color));
+        else
+            clearValues.emplace_back(vk::ClearDepthStencilValue(1.0f, 0));
+    }
 
     auto presentSemaphore = device->createSemaphoreUnique({});
 
@@ -145,10 +162,16 @@ int main()
         vk::RenderPassBeginInfo beginInfo;
         beginInfo.setRenderPass(renderPass.handle.get());
         beginInfo.setFramebuffer(frameBuffers[swapChainIndex].get());
-        beginInfo.setRenderArea(vk::Rect2D({0, 0}, swapChain.extent));
+        beginInfo.setRenderArea(renderArea);
         beginInfo.setClearValues(clearValues);
         cmd.beginRenderPass(beginInfo, vk::SubpassContents::eInline);
+        cmd.setScissor(0, 1, &renderArea);
+        cmd.setViewport(0, 1, &viewport);
         cmd.nextSubpass(vk::SubpassContents::eInline);
+
+        cmd.bindPipeline(quad->bindPoint, quad->handle.get());
+        cmd.draw(4, 1, 0, 0);
+
         cmd.endRenderPass();
         engine.submitAndWait(cmd);
 
