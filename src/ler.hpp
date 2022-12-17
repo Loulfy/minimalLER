@@ -109,7 +109,7 @@ namespace ler
     public:
 
         void reflectPipelineLayout(vk::Device device, const std::vector<ShaderPtr>& shaders);
-        vk::DescriptorSet createDescriptorSet(uint32_t set);
+        vk::DescriptorSet createDescriptorSet(vk::Device& device, uint32_t set);
 
         vk::UniquePipeline handle;
         vk::UniquePipelineLayout pipelineLayout;
@@ -155,6 +155,12 @@ namespace ler
         glm::vec3 bMax = glm::vec3(0.f);
     };
 
+    struct SceneConstant
+    {
+        glm::mat4 proj = glm::mat4(1.f);
+        glm::mat4 view = glm::mat4(1.f);
+    };
+
     struct Scene
     {
         Buffer staging;
@@ -167,11 +173,15 @@ namespace ler
         Buffer instanceBuffer;
         Buffer materialBuffer;
 
+        Buffer aabbBuffer;
+
         uint32_t vertexCount = 0;
         uint32_t indexCount = 0;
         uint32_t drawCount = 0;
+        uint32_t lineCount = 0;
+        uint32_t matCount = 0;
 
-        std::vector<Texture> textures;
+        std::vector<TexturePtr> textures;
         std::vector<Instance> instances;
         std::vector<Material> materials;
         std::vector<MeshIndirect> geometries;
@@ -203,8 +213,9 @@ namespace ler
         // Texture
         TexturePtr createTexture(vk::Format format, const vk::Extent2D& extent, vk::SampleCountFlagBits sampleCount, bool isRenderTarget = false);
         TexturePtr createTextureFromNative(vk::Image image, vk::Format format, const vk::Extent2D& extent);
-        uint32_t loadTextureFromFile(const fs::path& path);
-        uint32_t loadTextureFromMemory(const unsigned char* buffer, uint32_t size);
+        vk::UniqueSampler createSampler(const vk::SamplerAddressMode& addressMode, bool filter);
+        TexturePtr loadTextureFromFile(const fs::path& path);
+        TexturePtr loadTextureFromMemory(const unsigned char* buffer, uint32_t size);
         static vk::ImageAspectFlags guessImageAspectFlags(vk::Format format);
 
         SwapChain createSwapChain(vk::SurfaceKHR surface, uint32_t width, uint32_t height, bool vSync = true);
@@ -217,6 +228,9 @@ namespace ler
         ShaderPtr createShader(const fs::path& path);
         PipelinePtr createGraphicsPipeline(const RenderPass& renderPass, const std::vector<ShaderPtr>& shaders, const PipelineInfo& info);
         PipelinePtr createComputePipeline(const ShaderPtr& shader);
+        void updateSampler(vk::DescriptorSet descriptorSet, uint32_t binding, vk::Sampler& sampler, const std::vector<TexturePtr>& textures);
+        void updateStorage(vk::DescriptorSet descriptorSet, uint32_t binding, const Buffer& buffer, uint64_t byteSize);
+        void updateAttachment(vk::DescriptorSet descriptorSet, uint32_t binding, const TexturePtr& texture);
 
         // Scene
         Scene fromFile(const fs::path& path);
@@ -235,7 +249,7 @@ namespace ler
         static std::vector<char> loadBinaryFromFile(const fs::path& path);
         static uint32_t formatSize(VkFormat format);
         vk::Format chooseDepthFormat();
-        uint32_t loadTexture(const aiScene* aiScene, const aiString& filename, const fs::path& path);
+        uint32_t loadTexture(Scene& scene, const aiScene* aiScene, const aiString& filename, const fs::path& path);
 
         std::mutex m_mutex;
         vk::PhysicalDevice m_physicalDevice;
@@ -247,7 +261,7 @@ namespace ler
         std::list<vk::CommandBuffer> m_commandBuffersPool;
 
         std::vector<TexturePtr> m_textures;
-        std::map<std::string, uint32_t> m_cache;
+        std::map<std::string, uint64_t> m_cache;
     };
 }
 

@@ -84,13 +84,18 @@ int main()
     deviceInfo.setPEnabledLayerNames(layers);
     deviceInfo.setPEnabledFeatures(&features);
 
+    vk::PhysicalDeviceVulkan11Features vulkan11Features;
+    vulkan11Features.setShaderDrawParameters(true);
     vk::PhysicalDeviceVulkan12Features vulkan12Features;
     vulkan12Features.setBufferDeviceAddress(true);
+    vulkan12Features.setRuntimeDescriptorArray(true);
     vulkan12Features.setDescriptorBindingVariableDescriptorCount(true);
+    vulkan12Features.setShaderSampledImageArrayNonUniformIndexing(true);
     vk::StructureChain<vk::DeviceCreateInfo,
     vk::PhysicalDeviceRayTracingPipelineFeaturesKHR,
     vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
-    vk::PhysicalDeviceVulkan12Features> createInfoChain(deviceInfo, {true}, {true}, vulkan12Features);
+    vk::PhysicalDeviceVulkan11Features,
+    vk::PhysicalDeviceVulkan12Features> createInfoChain(deviceInfo, {true}, {true}, vulkan11Features, vulkan12Features);
     auto device = physicalDevice.createDeviceUnique(createInfoChain.get<vk::DeviceCreateInfo>());
     VULKAN_HPP_DEFAULT_DISPATCHER.init(device.get());
 
@@ -115,7 +120,7 @@ int main()
     ler::LerContext engine(config);
 
     //auto scene = engine.fromFile("C:/Users/loulfy/glTF-Sample-Models/2.0/Sponza/glTF/Sponza.gltf");
-    //auto scene = engine.fromFile(ASSETS / "Lantern.glb");
+    auto scene = engine.fromFile(ASSETS / "Lantern.glb");
 
     uint32_t swapChainIndex = 0;
     auto swapChain = engine.createSwapChain(glfwSurface, WIDTH, HEIGHT);
@@ -125,16 +130,60 @@ int main()
     vk::Viewport viewport(0, 0, static_cast<float>(swapChain.extent.width), static_cast<float>(swapChain.extent.height), 0, 1.0f);
     vk::Rect2D renderArea(vk::Offset2D(), swapChain.extent);
 
-    std::vector<ler::ShaderPtr> shaders;
-    shaders.push_back(engine.createShader(ASSETS / "shaders" / "quad.vert.spv"));
-    shaders.push_back(engine.createShader(ASSETS / "shaders" / "quad.frag.spv"));
+    // FIRST PASS (Fill GBuffer)
+    std::vector<ler::ShaderPtr> gbufferShaders;
+    gbufferShaders.push_back(engine.createShader(ASSETS / "shaders" / "gbuffer.vert.spv"));
+    gbufferShaders.push_back(engine.createShader(ASSETS / "shaders" / "gbuffer.frag.spv"));
 
     ler::PipelineInfo info;
-    info.subPass = 1;
+    info.subPass = 0;
     info.extent = swapChain.extent;
+    info.textureCount = scene.textures.size();
     info.sampleCount = vk::SampleCountFlagBits::e8;
+    info.topology = vk::PrimitiveTopology::eTriangleList;
+    auto gbuffer = engine.createGraphicsPipeline(renderPass, gbufferShaders, info);
+
+    vk::UniqueSampler sampler = engine.createSampler(vk::SamplerAddressMode::eRepeat, true);
+
+    std::array<vk::DescriptorSet, 2> gbufferDescriptorSet;
+    gbufferDescriptorSet[0] = gbuffer->createDescriptorSet(device.get(), 0);
+    engine.updateStorage(gbufferDescriptorSet[0], 0, scene.instanceBuffer, scene.drawCount * sizeof(ler::Instance));
+    gbufferDescriptorSet[1] = gbuffer->createDescriptorSet(device.get(), 1);
+    engine.updateStorage(gbufferDescriptorSet[1], 0, scene.materialBuffer, scene.matCount * sizeof(ler::Material));
+    engine.updateSampler(gbufferDescriptorSet[1], 1, sampler.get(), scene.textures);
+
+    // SECOND PASS (Composition)
+    std::vector<ler::ShaderPtr> deferredShaders;
+    deferredShaders.push_back(engine.createShader(ASSETS / "shaders" / "quad.vert.spv"));
+    deferredShaders.push_back(engine.createShader(ASSETS / "shaders" / "deferred.frag.spv"));
+
+    info.subPass = 1;
+    info.textureCount = 0;
+    info.writeDepth = false;
     info.topology = vk::PrimitiveTopology::eTriangleStrip;
-    auto quad = engine.createGraphicsPipeline(renderPass, shaders, info);
+    auto deferred = engine.createGraphicsPipeline(renderPass, deferredShaders, info);
+
+    std::array<vk::DescriptorSet, 2> inputColor;
+    /*inputColor[0] = deferred->createDescriptorSet(device.get(), 0);
+    engine.updateAttachment(inputColor[0], 0, frameBuffers[0].)
+    inputColor[0]->updateAttachment(0, m_frameBuffers[0]->images[0]);
+    inputColor[0]->updateAttachment(1, m_frameBuffers[0]->images[1]);
+    inputColor[0]->updateAttachment(2, m_frameBuffers[0]->images[2]);
+
+    inputColor[1] = deferred->createDescriptorSet(device.get(), 0);
+    inputColor[1]->updateAttachment(0, m_frameBuffers[1]->images[0]);
+    inputColor[1]->updateAttachment(1, m_frameBuffers[1]->images[1]);
+    inputColor[1]->updateAttachment(2, m_frameBuffers[1]->images[2]);*/
+
+    // THIRD PASS (Bounding Box)
+    std::vector<ler::ShaderPtr> aabbShaders;
+    aabbShaders.push_back(engine.createShader(ASSETS / "shaders" / "aabb.vert.spv"));
+    aabbShaders.push_back(engine.createShader(ASSETS / "shaders" / "aabb.frag.spv"));
+
+    info.subPass = 1;
+    info.textureCount = 0;
+    info.topology = vk::PrimitiveTopology::eLineList;
+    auto quad = engine.createGraphicsPipeline(renderPass, aabbShaders, info);
 
     std::array<float, 4> color = {1.f, 1.f, 1.f, 1.f};
     std::vector<vk::ClearValue> clearValues;
@@ -149,8 +198,14 @@ int main()
 
     auto presentSemaphore = device->createSemaphoreUnique({});
 
+    ler::SceneConstant constant;
+    constant.proj = glm::perspective(glm::radians(55.f), 1920.f / 1080.f, 0.01f, 10000.0f);
+    constant.view = glm::lookAt(glm::vec3(0.0f, 50.0f, -50.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    constant.proj[1][1] *= -1;
+
     vk::Result result;
     vk::CommandBuffer cmd;
+    vk::DeviceSize offset = 0;
     while(!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
@@ -165,12 +220,23 @@ int main()
         beginInfo.setRenderArea(renderArea);
         beginInfo.setClearValues(clearValues);
         cmd.beginRenderPass(beginInfo, vk::SubpassContents::eInline);
+        cmd.pushConstants(quad->pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex, 0, sizeof(ler::SceneConstant), &constant);
         cmd.setScissor(0, 1, &renderArea);
         cmd.setViewport(0, 1, &viewport);
-        cmd.nextSubpass(vk::SubpassContents::eInline);
 
+        cmd.bindPipeline(gbuffer->bindPoint, gbuffer->handle.get());
+        cmd.bindDescriptorSets(gbuffer->bindPoint, gbuffer->pipelineLayout.get(), 0, gbufferDescriptorSet, nullptr);
+        cmd.bindIndexBuffer(scene.indexBuffer.handle, offset, vk::IndexType::eUint32);
+        cmd.bindVertexBuffers(0, 1, &scene.vertexBuffer.handle, &offset);
+        cmd.bindVertexBuffers(1, 1, &scene.texcoordBuffer.handle, &offset);
+        cmd.bindVertexBuffers(2, 1, &scene.normalBuffer.handle, &offset);
+        cmd.bindVertexBuffers(3, 1, &scene.tangentBuffer.handle, &offset);
+        cmd.drawIndexedIndirect(scene.indirectBuffer.handle, offset, scene.drawCount, sizeof(vk::DrawIndexedIndirectCommand));
+
+        cmd.nextSubpass(vk::SubpassContents::eInline);
         cmd.bindPipeline(quad->bindPoint, quad->handle.get());
-        cmd.draw(4, 1, 0, 0);
+        cmd.bindVertexBuffers(0, 1, &scene.aabbBuffer.handle, &offset);
+        cmd.draw(scene.lineCount, 1, 0, 0);
 
         cmd.endRenderPass();
         engine.submitAndWait(cmd);

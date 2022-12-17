@@ -128,6 +128,23 @@ namespace ler
         copyRegion.imageExtent = texture->info.extent;
         copyRegion.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
         cmd.copyBufferToImage(buffer.handle, texture->handle, vk::ImageLayout::eTransferDstOptimal, 1, &copyRegion);
+
+        // prepare texture to color layout
+        std::vector<vk::ImageMemoryBarrier> imageBarriersStop;
+        beforeStageFlags = vk::PipelineStageFlagBits::eTransfer;
+        afterStageFlags = vk::PipelineStageFlagBits::eFragmentShader;
+        imageBarriersStop.emplace_back(
+            vk::AccessFlagBits::eTransferWrite,
+            vk::AccessFlagBits::eShaderRead,
+            vk::ImageLayout::eTransferDstOptimal,
+            vk::ImageLayout::eShaderReadOnlyOptimal,
+            VK_QUEUE_FAMILY_IGNORED,
+            VK_QUEUE_FAMILY_IGNORED,
+            texture->handle,
+            vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)
+        );
+
+        cmd.pipelineBarrier(beforeStageFlags, afterStageFlags, vk::DependencyFlags(), {}, {}, imageBarriersStop);
     }
 
     static vk::ImageUsageFlags pickImageUsage(vk::Format format, bool isRenderTarget)
@@ -239,6 +256,27 @@ namespace ler
 
         m_textures.push_back(texture);
         return texture;
+    }
+
+    vk::UniqueSampler LerContext::createSampler(const vk::SamplerAddressMode& addressMode, bool filter)
+    {
+        vk::SamplerCreateInfo samplerInfo;
+        samplerInfo.setMagFilter(filter ? vk::Filter::eLinear : vk::Filter::eNearest);
+        samplerInfo.setMinFilter(filter ? vk::Filter::eLinear : vk::Filter::eNearest);
+        samplerInfo.setMipmapMode(filter ? vk::SamplerMipmapMode::eLinear : vk::SamplerMipmapMode::eNearest);
+        samplerInfo.setAddressModeU(addressMode);
+        samplerInfo.setAddressModeV(addressMode);
+        samplerInfo.setAddressModeW(addressMode);
+        samplerInfo.setMipLodBias(0.f);
+        samplerInfo.setAnisotropyEnable(false);
+        samplerInfo.setMaxAnisotropy(1.f);
+        samplerInfo.setCompareEnable(false);
+        samplerInfo.setCompareOp(vk::CompareOp::eLess);
+        samplerInfo.setMinLod(0.f);
+        samplerInfo.setMaxLod(std::numeric_limits<float>::max());
+        samplerInfo.setBorderColor(vk::BorderColor::eFloatOpaqueBlack);
+
+        return m_device.createSamplerUnique(samplerInfo, nullptr);
     }
 
     vk::PresentModeKHR LerContext::chooseSwapPresentMode(const std::vector<vk::PresentModeKHR>& availablePresentModes, bool vSync)
@@ -461,7 +499,7 @@ namespace ler
             .setColorAttachments(colorAttachmentRef2)
             .setResolveAttachments(resolveAttachmentRef)
                     //.setPResolveAttachments(&resolveAttachmentRef)
-                    //.setPDepthStencilAttachment(&depthAttachmentRef)
+                     .setPDepthStencilAttachment(&depthAttachmentRef)
             .setInputAttachments(colorInputRef);
 
         for(auto& output : colorAttachmentRef2)
@@ -672,7 +710,7 @@ namespace ler
         pipelineLayout = device.createPipelineLayoutUnique(layoutInfo);
     }
 
-    vk::DescriptorSet BasePipeline::createDescriptorSet(uint32_t set)
+    vk::DescriptorSet BasePipeline::createDescriptorSet(vk::Device& device, uint32_t set)
     {
         if(!descriptorAllocMap.contains(set))
             return {};
@@ -684,7 +722,7 @@ namespace ler
         descriptorSetAllocInfo.setDescriptorSetCount(1);
         descriptorSetAllocInfo.setDescriptorPool(allocator.pool.get());
         descriptorSetAllocInfo.setPSetLayouts(&allocator.layout.get());
-        //res = m_context.device.allocateDescriptorSets(&descriptorSetAllocInfo,&descriptorSet);
+        res = device.allocateDescriptorSets(&descriptorSetAllocInfo, &descriptorSet);
         assert(res == vk::Result::eSuccess);
         return descriptorSet;
     }
@@ -846,7 +884,71 @@ namespace ler
         return pipeline;
     }
 
-    uint32_t LerContext::loadTextureFromFile(const fs::path& path)
+    void LerContext::updateSampler(vk::DescriptorSet descriptorSet, uint32_t binding, vk::Sampler& sampler, const std::vector<TexturePtr>& textures)
+    {
+        std::vector<vk::WriteDescriptorSet> descriptorWrites;
+        std::vector<vk::DescriptorImageInfo> descriptorImageInfo;
+
+        auto descriptorWriteInfo = vk::WriteDescriptorSet();
+        descriptorWriteInfo.setDescriptorType(vk::DescriptorType::eCombinedImageSampler);
+        descriptorWriteInfo.setDstBinding(binding);
+        descriptorWriteInfo.setDstSet(descriptorSet);
+        descriptorWriteInfo.setDescriptorCount(textures.size());
+
+        for(auto& tex : textures)
+        {
+            auto& imageInfo = descriptorImageInfo.emplace_back();
+            imageInfo = vk::DescriptorImageInfo();
+            imageInfo.setSampler(sampler);
+            imageInfo.setImageLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
+            if(tex)
+                imageInfo.setImageView(tex->view.get());
+        }
+
+        descriptorWriteInfo.setImageInfo(descriptorImageInfo);
+        descriptorWrites.push_back(descriptorWriteInfo);
+        m_device.updateDescriptorSets(descriptorWrites, nullptr);
+    }
+
+    void LerContext::updateStorage(vk::DescriptorSet descriptorSet, uint32_t binding, const Buffer& buffer, uint64_t byteSize)
+    {
+        std::vector<vk::WriteDescriptorSet> descriptorWrites;
+
+        auto descriptorWriteInfo = vk::WriteDescriptorSet();
+        descriptorWriteInfo.setDescriptorType(vk::DescriptorType::eStorageBuffer);
+        descriptorWriteInfo.setDstBinding(binding);
+        descriptorWriteInfo.setDstSet(descriptorSet);
+        descriptorWriteInfo.setDescriptorCount(1);
+
+        vk::DescriptorBufferInfo buffInfo(buffer.handle, 0, byteSize);
+
+        descriptorWriteInfo.setBufferInfo(buffInfo);
+        descriptorWrites.push_back(descriptorWriteInfo);
+        m_device.updateDescriptorSets(descriptorWrites, nullptr);
+    }
+
+    void LerContext::updateAttachment(vk::DescriptorSet descriptorSet, uint32_t binding, const TexturePtr& texture)
+    {
+        std::vector<vk::WriteDescriptorSet> descriptorWrites;
+        std::vector<vk::DescriptorImageInfo> descriptorImageInfo;
+
+        auto descriptorWriteInfo = vk::WriteDescriptorSet();
+        descriptorWriteInfo.setDescriptorType(vk::DescriptorType::eInputAttachment);
+        descriptorWriteInfo.setDstBinding(binding);
+        descriptorWriteInfo.setDstSet(descriptorSet);
+        descriptorWriteInfo.setDescriptorCount(1);
+
+        vk::DescriptorImageInfo imageInfo;
+        imageInfo.setSampler(nullptr);
+        imageInfo.setImageView(texture->view.get());
+        imageInfo.setImageLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
+
+        descriptorWriteInfo.setImageInfo(imageInfo);
+        descriptorWrites.push_back(descriptorWriteInfo);
+        m_device.updateDescriptorSets(descriptorWrites, nullptr);
+    }
+
+    TexturePtr LerContext::loadTextureFromFile(const fs::path& path)
     {
         int w, h, c;
         if(path.extension() == ".ktx" || path.extension() == ".dds")
@@ -865,10 +967,10 @@ namespace ler
 
         stbi_image_free(image);
         m_allocator.destroyBuffer(staging.handle, staging.allocation);
-        return 0;
+        return texture;
     }
 
-    uint32_t LerContext::loadTextureFromMemory(const unsigned char* buffer, uint32_t size)
+    TexturePtr LerContext::loadTextureFromMemory(const unsigned char* buffer, uint32_t size)
     {
         int w, h, c;
 
@@ -885,7 +987,7 @@ namespace ler
 
         stbi_image_free(image);
         m_allocator.destroyBuffer(staging.handle, staging.allocation);
-        return 0;
+        return texture;
     }
 
     vk::CommandBuffer LerContext::getCommandBuffer()
@@ -930,25 +1032,28 @@ namespace ler
         m_commandBuffersPool.push_back(cmd);
     }
 
-    uint32_t LerContext::loadTexture(const aiScene* aiScene, const aiString& filename, const fs::path& path)
+    uint32_t LerContext::loadTexture(Scene& scene, const aiScene* aiScene, const aiString& filename, const fs::path& path)
     {
         const auto* key = filename.C_Str();
         if(m_cache.contains(key))
             return m_cache.at(key);
 
+        TexturePtr tex;
         auto em = aiScene->GetEmbeddedTexture(key);
         std::cout << "Load image : " << key << std::endl;
         if(em == nullptr)
         {
             fs::path f = path.parent_path() / fs::path(key);
-            loadTextureFromFile(f);
+            tex = loadTextureFromFile(f);
         }
         else
         {
             const auto* buffer = reinterpret_cast<const unsigned char*>(em->pcData);
-            loadTextureFromMemory(buffer, em->mWidth);
+            tex = loadTextureFromMemory(buffer, em->mWidth);
         }
-        m_cache.emplace(key, 0);
+
+        m_cache.emplace(key, scene.textures.size());
+        scene.textures.emplace_back(tex);
         return m_cache.at(key);
     }
 
@@ -1027,6 +1132,12 @@ namespace ler
             loadNode(scene, aiNode->mChildren[i]);
     }
 
+    void addLine(std::vector<glm::vec3>& lines, const glm::vec3& p1, const glm::vec3& p2)
+    {
+        lines.push_back(p1);
+        lines.push_back(p2);
+    }
+
     Scene LerContext::fromFile(const fs::path& path)
     {
         Scene scene;
@@ -1051,27 +1162,28 @@ namespace ler
             if(material->GetTextureCount(aiTextureType_BASE_COLOR) > 0)
             {
                 material->GetTexture(aiTextureType_BASE_COLOR, 0, &filename);
-                materialInstance.texId = loadTexture(aiScene, filename, path);
+                materialInstance.texId = loadTexture(scene, aiScene, filename, path);
             }
             if(material->GetTextureCount(aiTextureType_AMBIENT) > 0)
             {
                 material->GetTexture(aiTextureType_AMBIENT, 0, &filename);
-                materialInstance.texId = loadTexture(aiScene, filename, path);
+                materialInstance.texId = loadTexture(scene, aiScene, filename, path);
             }
             if(material->GetTextureCount(aiTextureType_DIFFUSE) > 0)
             {
                 material->GetTexture(aiTextureType_DIFFUSE, 0, &filename);
-                materialInstance.texId = loadTexture(aiScene, filename, path);
+                materialInstance.texId = loadTexture(scene, aiScene, filename, path);
             }
             if(material->GetTextureCount(aiTextureType_NORMALS) > 0)
             {
                 material->GetTexture(aiTextureType_NORMALS, 0, &filename);
-                materialInstance.norId = loadTexture(aiScene, filename, path);
+                materialInstance.norId = loadTexture(scene, aiScene, filename, path);
             }
 
             scene.materials.push_back(materialInstance);
         }
 
+        scene.matCount = aiScene->mNumMaterials;
         MeshIndirect ind;
 
         // Prepare indirect data
@@ -1154,6 +1266,43 @@ namespace ler
         byteSize = scene.materials.size() * sizeof(Material);
         uploadBuffer(scene.staging, scene.materials.data(), byteSize);
         copyBuffer(scene.staging, scene.materialBuffer, byteSize);
+
+        std::vector<glm::vec3> lines;
+        lines.reserve(5000);
+        for(const auto& obj : scene.instances)
+        {
+            std::array<glm::vec3, 8> pts = {
+                glm::vec3(obj.bMax.x, obj.bMax.y, obj.bMax.z),
+                glm::vec3(obj.bMax.x, obj.bMax.y, obj.bMin.z),
+                glm::vec3(obj.bMax.x, obj.bMin.y, obj.bMax.z),
+                glm::vec3(obj.bMax.x, obj.bMin.y, obj.bMin.z),
+                glm::vec3(obj.bMin.x, obj.bMax.y, obj.bMax.z),
+                glm::vec3(obj.bMin.x, obj.bMax.y, obj.bMin.z),
+                glm::vec3(obj.bMin.x, obj.bMin.y, obj.bMax.z),
+                glm::vec3(obj.bMin.x, obj.bMin.y, obj.bMin.z),
+            };
+
+            addLine(lines, pts[0], pts[1]);
+            addLine(lines, pts[2], pts[3]);
+            addLine(lines, pts[4], pts[5]);
+            addLine(lines, pts[6], pts[7]);
+
+            addLine(lines, pts[0], pts[2]);
+            addLine(lines, pts[1], pts[3]);
+            addLine(lines, pts[4], pts[6]);
+            addLine(lines, pts[5], pts[7]);
+
+            addLine(lines, pts[0], pts[4]);
+            addLine(lines, pts[1], pts[5]);
+            addLine(lines, pts[2], pts[6]);
+            addLine(lines, pts[3], pts[7]);
+        }
+
+        byteSize = lines.size()*sizeof(glm::vec3);
+        scene.aabbBuffer = createBuffer(byteSize, vk::BufferUsageFlagBits::eVertexBuffer);
+        uploadBuffer(scene.staging, lines.data(), byteSize);
+        copyBuffer(scene.staging, scene.aabbBuffer, byteSize);
+        scene.lineCount = lines.size();
 
         return scene;
     }
