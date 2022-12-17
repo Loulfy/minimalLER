@@ -1,0 +1,83 @@
+#version 460 core
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform Frustum
+{
+    vec4 frustumPlanes[6];
+    vec4 frustumCorners[8];
+    uint numShapesToCull;
+};
+
+struct Instance
+{
+    mat4 model;
+    vec3 bbmin;
+    vec3 bbmax;
+    uint matId;
+};
+
+struct IndexedIndirectCommand
+{
+    uint count;
+    uint instanceCount;
+    uint firstIndex;
+    uint baseVertex;
+    uint baseInstance;
+};
+
+layout(set = 1, binding = 0) readonly buffer inInstBuffer { Instance props[]; };
+
+layout(std430, set = 1, binding = 1) writeonly buffer DrawCommands
+{
+    IndexedIndirectCommand  in_DrawCommands[];
+};
+
+layout(std430, set = 1, binding = 2) buffer NumVisibleMeshes
+{
+    uint numVisibleMeshes;
+};
+
+bool isAABBinFrustum(vec3 min, vec3 max)
+{
+    for (int i = 0; i < 6; i++) {
+        int r = 0;
+        r += ( dot( frustumPlanes[i], vec4(min.x, min.y, min.z, 1.0f) ) < 0.0 ) ? 1 : 0;
+        r += ( dot( frustumPlanes[i], vec4(max.x, min.y, min.z, 1.0f) ) < 0.0 ) ? 1 : 0;
+        r += ( dot( frustumPlanes[i], vec4(min.x, max.y, min.z, 1.0f) ) < 0.0 ) ? 1 : 0;
+        r += ( dot( frustumPlanes[i], vec4(max.x, max.y, min.z, 1.0f) ) < 0.0 ) ? 1 : 0;
+        r += ( dot( frustumPlanes[i], vec4(min.x, min.y, max.z, 1.0f) ) < 0.0 ) ? 1 : 0;
+        r += ( dot( frustumPlanes[i], vec4(max.x, min.y, max.z, 1.0f) ) < 0.0 ) ? 1 : 0;
+        r += ( dot( frustumPlanes[i], vec4(min.x, max.y, max.z, 1.0f) ) < 0.0 ) ? 1 : 0;
+        r += ( dot( frustumPlanes[i], vec4(max.x, max.y, max.z, 1.0f) ) < 0.0 ) ? 1 : 0;
+        if ( r == 8 ) return false;
+    }
+
+    int r = 0;
+    r = 0; for ( int i = 0; i < 8; i++ ) r += ( (frustumCorners[i].x > max.x) ? 1 : 0 ); if ( r == 8 ) return false;
+    r = 0; for ( int i = 0; i < 8; i++ ) r += ( (frustumCorners[i].x < min.x) ? 1 : 0 ); if ( r == 8 ) return false;
+    r = 0; for ( int i = 0; i < 8; i++ ) r += ( (frustumCorners[i].y > max.y) ? 1 : 0 ); if ( r == 8 ) return false;
+    r = 0; for ( int i = 0; i < 8; i++ ) r += ( (frustumCorners[i].y < min.y) ? 1 : 0 ); if ( r == 8 ) return false;
+    r = 0; for ( int i = 0; i < 8; i++ ) r += ( (frustumCorners[i].z > max.z) ? 1 : 0 ); if ( r == 8 ) return false;
+    r = 0; for ( int i = 0; i < 8; i++ ) r += ( (frustumCorners[i].z < min.z) ? 1 : 0 ); if ( r == 8 ) return false;
+
+    return true;
+}
+
+void main()
+{
+    const uint idx = gl_GlobalInvocationID.x;
+
+    // skip items beyond drawCount
+    if (idx < numShapesToCull)
+    {
+        Instance obj = props[idx];
+        uint numInstances = isAABBinFrustum(obj.bbmin, obj.bbmax) ? 1 : 0;
+        in_DrawCommands[idx].instanceCount = numInstances;
+        atomicAdd(numVisibleMeshes, numInstances);
+    }
+    else
+    {
+        in_DrawCommands[idx].instanceCount = 1;
+    }
+}
