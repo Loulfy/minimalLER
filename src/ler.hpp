@@ -66,6 +66,12 @@ namespace ler
         std::array<std::set<uint32_t>, 4> subPass;
     };
 
+    struct FrameBuffer
+    {
+        vk::UniqueFramebuffer handle;
+        std::vector<TexturePtr> images;
+    };
+
     struct DescriptorSetLayoutData
     {
         uint32_t set_number = 0;
@@ -222,7 +228,7 @@ namespace ler
 
         // RenderPass
         RenderPass createDefaultRenderPass(vk::Format surfaceFormat);
-        std::vector<vk::UniqueFramebuffer> createFrameBuffers(const RenderPass& renderPass, const SwapChain& swapChain);
+        std::vector<FrameBuffer> createFrameBuffers(const RenderPass& renderPass, const SwapChain& swapChain);
 
         // Pipeline
         ShaderPtr createShader(const fs::path& path);
@@ -234,6 +240,7 @@ namespace ler
 
         // Scene
         Scene fromFile(const fs::path& path);
+        void destroyScene(const Scene& scene);
         static void transformBoundingBox(const glm::mat4& t, glm::vec3& min, glm::vec3& max);
 
         // Execution

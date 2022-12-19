@@ -498,8 +498,7 @@ namespace ler
             .setPipelineBindPoint(vk::PipelineBindPoint::eGraphics)
             .setColorAttachments(colorAttachmentRef2)
             .setResolveAttachments(resolveAttachmentRef)
-                    //.setPResolveAttachments(&resolveAttachmentRef)
-                     .setPDepthStencilAttachment(&depthAttachmentRef)
+            .setPDepthStencilAttachment(&depthAttachmentRef)
             .setInputAttachments(colorInputRef);
 
         for(auto& output : colorAttachmentRef2)
@@ -524,22 +523,25 @@ namespace ler
         return renderPass;
     }
 
-    std::vector<vk::UniqueFramebuffer> LerContext::createFrameBuffers(const RenderPass& renderPass, const SwapChain& swapChain)
+    std::vector<FrameBuffer> LerContext::createFrameBuffers(const RenderPass& renderPass, const SwapChain& swapChain)
     {
-        std::vector<vk::UniqueFramebuffer> frameBuffers;
+        std::vector<FrameBuffer> frameBuffers;
         std::vector<vk::ImageView> attachmentViews;
         attachmentViews.reserve(renderPass.attachments.size());
         auto swapChainImages = m_device.getSwapchainImagesKHR(swapChain.handle.get());
         for(auto& image : swapChainImages)
         {
+            auto& frameBuffer = frameBuffers.emplace_back();
             attachmentViews.clear();
             for(size_t i = 0; i < renderPass.attachments.size() - 1; ++i)
             {
                 auto texture = createTexture(renderPass.attachments[i].format, swapChain.extent, renderPass.attachments[i].samples, true);
                 attachmentViews.emplace_back(texture->view.get());
+                frameBuffer.images.push_back(texture);
             }
             auto frame = createTextureFromNative(image, swapChain.format, swapChain.extent);
             attachmentViews.emplace_back(frame->view.get());
+            frameBuffer.images.push_back(frame);
 
             vk::FramebufferCreateInfo framebufferInfo;
             framebufferInfo.setRenderPass(renderPass.handle.get());
@@ -548,7 +550,7 @@ namespace ler
             framebufferInfo.setHeight(swapChain.extent.height);
             framebufferInfo.setLayers(1);
 
-            frameBuffers.emplace_back(m_device.createFramebufferUnique(framebufferInfo));
+            frameBuffer.handle = m_device.createFramebufferUnique(framebufferInfo);
         }
 
         return frameBuffers;
@@ -698,9 +700,9 @@ namespace ler
                 allocator.layoutBinding.insert(allocator.layoutBinding.end(), e->second.bindings.begin(), e->second.bindings.end());
             descriptorLayoutInfo.setBindings(allocator.layoutBinding);
             for(auto& b : allocator.layoutBinding)
-                descriptorPoolSizeInfo.emplace_back(b.descriptorType, b.descriptorCount);
+                descriptorPoolSizeInfo.emplace_back(b.descriptorType, b.descriptorCount+2);
             descriptorPoolInfo.setPoolSizes(descriptorPoolSizeInfo);
-            descriptorPoolInfo.setMaxSets(3);
+            descriptorPoolInfo.setMaxSets(4);
             allocator.pool = device.createDescriptorPoolUnique(descriptorPoolInfo);
             allocator.layout = device.createDescriptorSetLayoutUnique(descriptorLayoutInfo);
             setLayouts.push_back(allocator.layout.get());
@@ -1305,5 +1307,19 @@ namespace ler
         scene.lineCount = lines.size();
 
         return scene;
+    }
+
+    void LerContext::destroyScene(const Scene& scene)
+    {
+        m_allocator.destroyBuffer(scene.staging.handle, scene.staging.allocation);
+        m_allocator.destroyBuffer(scene.aabbBuffer.handle, scene.aabbBuffer.allocation);
+        m_allocator.destroyBuffer(scene.indexBuffer.handle, scene.indexBuffer.allocation);
+        m_allocator.destroyBuffer(scene.vertexBuffer.handle, scene.vertexBuffer.allocation);
+        m_allocator.destroyBuffer(scene.normalBuffer.handle, scene.normalBuffer.allocation);
+        m_allocator.destroyBuffer(scene.tangentBuffer.handle, scene.tangentBuffer.allocation);
+        m_allocator.destroyBuffer(scene.texcoordBuffer.handle, scene.texcoordBuffer.allocation);
+        m_allocator.destroyBuffer(scene.indirectBuffer.handle, scene.indirectBuffer.allocation);
+        m_allocator.destroyBuffer(scene.instanceBuffer.handle, scene.instanceBuffer.allocation);
+        m_allocator.destroyBuffer(scene.materialBuffer.handle, scene.materialBuffer.allocation);
     }
 }

@@ -1,8 +1,8 @@
 #version 460
 
-layout (input_attachment_index = 0, set = 0, binding = 0) uniform subpassInput samplerPosition;
-layout (input_attachment_index = 1, set = 0, binding = 1) uniform subpassInput samplerNormal;
-layout (input_attachment_index = 2, set = 0, binding = 2) uniform subpassInput samplerAlbedo;
+layout (input_attachment_index = 0, set = 0, binding = 0) uniform subpassInputMS samplerPosition;
+layout (input_attachment_index = 1, set = 0, binding = 1) uniform subpassInputMS samplerNormal;
+layout (input_attachment_index = 2, set = 0, binding = 2) uniform subpassInputMS samplerAlbedo;
 
 layout (location = 0) in vec2 inUV;
 
@@ -34,13 +34,13 @@ const Light lights[1] = Light[](
 void main()
 {
     // Get G-Buffer values
-    /*vec3 fragPos = subpassLoad(samplerPosition, gl_SampleID).rgb;
+    vec3 fragPos = subpassLoad(samplerPosition, gl_SampleID).rgb;
     vec3 normal = subpassLoad(samplerNormal, gl_SampleID).rgb;
-    vec4 albedo = subpassLoad(samplerAlbedo, gl_SampleID);*/
+    vec4 albedo = subpassLoad(samplerAlbedo, gl_SampleID);
 
-    vec3 fragPos = subpassLoad(samplerPosition).rgb;
+    /*vec3 fragPos = subpassLoad(samplerPosition).rgb;
     vec3 normal = subpassLoad(samplerNormal).rgb;
-    vec4 albedo = subpassLoad(samplerAlbedo);
+    vec4 albedo = subpassLoad(samplerAlbedo);*/
 
     //outFragcolor = vec4(normal, 1);
     //outFragcolor = albedo;

@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 project(minimalRT)
 
 set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 set(SPIRV_REFLECT_EXAMPLES OFF)
 set(SPIRV_REFLECT_EXECUTABLE OFF)
 set(SPIRV_REFLECT_STATIC_LIB ON)
@@ -24,5 +25,5 @@ include_directories(libs/VulkanMemoryAllocator-Hpp/VulkanMemoryAllocator/include
 
 add_definitions(-DPROJECT_DIR=\"${PROJECT_SOURCE_DIR}\")
 
-add_executable(minimalRT src/main.cpp src/ler.hpp src/ler.cpp src/format.cpp)
+add_executable(minimalRT src/main.cpp src/ler.hpp src/ler.cpp src/format.cpp src/camera.h)
 target_link_libraries(minimalRT Vulkan::Vulkan ${CONAN_LIBS} spirv-reflect-static)
