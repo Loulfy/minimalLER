@@ -161,10 +161,23 @@ namespace ler
         glm::vec3 bMax = glm::vec3(0.f);
     };
 
+    struct DeferredConstant
+    {
+        alignas(16) glm::vec3 viewPos = glm::vec3(1.f);
+        alignas(4) glm::uint viewMode = 0;
+    };
+
     struct SceneConstant
     {
         glm::mat4 proj = glm::mat4(1.f);
         glm::mat4 view = glm::mat4(1.f);
+    };
+
+    struct Frustum
+    {
+        alignas(16) glm::vec4 planes[6];
+        alignas(16) glm::vec4 corners[8];
+        alignas(4) glm::uint num = 0;
     };
 
     struct Scene
@@ -211,6 +224,8 @@ namespace ler
         explicit LerContext(const LerSettings& settings);
 
         // Buffer
+        void destroyBuffer(Buffer& buffer);
+        void getFromBuffer(Buffer& buffer, uint32_t* ptr);
         Buffer createBuffer(uint32_t byteSize, vk::BufferUsageFlags usages = vk::BufferUsageFlagBits());
         void uploadBuffer(Buffer& staging, const void* src, uint32_t byteSize);
         void copyBuffer(Buffer& staging, Buffer& dst, uint64_t byteSize = VK_WHOLE_SIZE);
@@ -235,13 +250,15 @@ namespace ler
         PipelinePtr createGraphicsPipeline(const RenderPass& renderPass, const std::vector<ShaderPtr>& shaders, const PipelineInfo& info);
         PipelinePtr createComputePipeline(const ShaderPtr& shader);
         void updateSampler(vk::DescriptorSet descriptorSet, uint32_t binding, vk::Sampler& sampler, const std::vector<TexturePtr>& textures);
-        void updateStorage(vk::DescriptorSet descriptorSet, uint32_t binding, const Buffer& buffer, uint64_t byteSize);
+        void updateStorage(vk::DescriptorSet descriptorSet, uint32_t binding, const Buffer& buffer, uint64_t byteSize, bool uniform = false);
         void updateAttachment(vk::DescriptorSet descriptorSet, uint32_t binding, const TexturePtr& texture);
 
         // Scene
         Scene fromFile(const fs::path& path);
         void destroyScene(const Scene& scene);
         static void transformBoundingBox(const glm::mat4& t, glm::vec3& min, glm::vec3& max);
+        static void getFrustumPlanes(glm::mat4 mvp, glm::vec4* planes);
+        static void getFrustumCorners(glm::mat4 mvp, glm::vec4* points);
 
         // Execution
         vk::CommandBuffer getCommandBuffer();

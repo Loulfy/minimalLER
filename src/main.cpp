@@ -5,6 +5,10 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #define GLFW_INCLUDE_NONE // Do not include any OpenGL/Vulkan headers
 #include <GLFW/glfw3.h>
 
+#include <imgui.h>
+#include <imgui_impl_vulkan.h>
+#include <imgui_impl_glfw.h>
+
 #include "camera.h"
 
 #define KickstartRT_Graphics_API_Vulkan
@@ -17,11 +21,24 @@ static const uint32_t HEIGHT = 720;
 
 void glfw_key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
-    auto* manager = reinterpret_cast<Camera*>(glfwGetWindowUserPointer(window));
+    auto* camera = reinterpret_cast<Camera*>(glfwGetWindowUserPointer(window));
     if(action == GLFW_PRESS || action == GLFW_REPEAT)
-        manager->keyboardCallback(key, action, 0.002);
+        camera->keyboardCallback(key, action, 0.002);
     if(key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
         glfwSetWindowShouldClose(window, GLFW_TRUE);
+    if(key == GLFW_KEY_SPACE && action == GLFW_PRESS)
+    {
+        if(glfwGetInputMode(window, GLFW_CURSOR) == GLFW_CURSOR_DISABLED)
+        {
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            camera->lockMouse = true;
+        }
+        else
+        {
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            camera->lockMouse = false;
+        }
+    }
 }
 
 int main()
@@ -149,9 +166,10 @@ int main()
     config.graphicsQueueFamily = graphicsQueueFamily;
     ler::LerContext engine(config);
 
-    auto scene = engine.fromFile("C:/Users/loulfy/glTF-Sample-Models/2.0/Sponza/glTF/Sponza.gltf");
+    auto scene = engine.fromFile("C:/Users/loria/glTF-Sample-Models/2.0/Sponza/glTF/Sponza.gltf");
     //auto scene = engine.fromFile(ASSETS / "Lantern.glb");
 
+    vk::CommandBuffer cmd;
     uint32_t swapChainIndex = 0;
     auto swapChain = engine.createSwapChain(glfwSurface, WIDTH, HEIGHT);
     auto renderPass = engine.createDefaultRenderPass(swapChain.format);
@@ -159,6 +177,67 @@ int main()
 
     vk::Viewport viewport(0, 0, static_cast<float>(swapChain.extent.width), static_cast<float>(swapChain.extent.height), 0, 1.0f);
     vk::Rect2D renderArea(vk::Offset2D(), swapChain.extent);
+
+    std::array<vk::DescriptorPoolSize, 11> pool_sizes =
+    {{
+         {vk::DescriptorType::eSampler, 1000},
+         {vk::DescriptorType::eCombinedImageSampler, 1000},
+         {vk::DescriptorType::eSampledImage, 1000},
+         {vk::DescriptorType::eStorageImage, 1000},
+         {vk::DescriptorType::eUniformTexelBuffer, 1000},
+         {vk::DescriptorType::eStorageTexelBuffer, 1000},
+         {vk::DescriptorType::eUniformBuffer, 1000},
+         {vk::DescriptorType::eStorageBuffer, 1000},
+         {vk::DescriptorType::eUniformBufferDynamic, 1000},
+         {vk::DescriptorType::eStorageBufferDynamic, 1000},
+         {vk::DescriptorType::eInputAttachment, 1000}
+     }};
+
+    vk::DescriptorPoolCreateInfo poolInfo;
+    poolInfo.setFlags(vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet);
+    poolInfo.setPoolSizes(pool_sizes);
+    poolInfo.setMaxSets(1000);
+
+    auto imguiPool = device->createDescriptorPoolUnique(poolInfo);
+
+    int w, h;
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    glfwGetFramebufferSize(window, &w, &h);
+    io.DisplaySize = ImVec2(static_cast<float>(w), static_cast<float>(h));
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForVulkan(window, true);
+
+    //this initializes imgui for Vulkan
+    ImGui_ImplVulkan_InitInfo init_info = {};
+    init_info.Instance = instance.get();
+    init_info.PhysicalDevice = physicalDevice;
+    init_info.Device = device.get();
+    init_info.Queue = queue;
+    init_info.DescriptorPool = imguiPool.get();
+    init_info.MinImageCount = 2;
+    init_info.ImageCount = 2;
+    init_info.Subpass = 2;
+    init_info.MSAASamples = VK_SAMPLE_COUNT_8_BIT;
+    ImGui_ImplVulkan_Init(&init_info, renderPass.handle.get());
+
+    cmd = engine.getCommandBuffer();
+    ImGui_ImplVulkan_CreateFontsTexture(cmd);
+    engine.submitAndWait(cmd);
+
+    // FRUSTUM CULLING
+    auto cShader = engine.createShader(ASSETS / "shaders" / "triangle_cull.comp.spv");
+    auto culling = engine.createComputePipeline(cShader);
+    auto visibleBuffer = engine.createBuffer(256, vk::BufferUsageFlagBits::eStorageBuffer);
+    auto frustumBuffer = engine.createBuffer(256, vk::BufferUsageFlagBits::eUniformBuffer);
+    std::array<vk::DescriptorSet,2> cullDescriptorSet;
+    for(size_t i = 0; i < cullDescriptorSet.size(); ++i)
+        cullDescriptorSet[i] = culling->createDescriptorSet(device.get(), i);
+
+    engine.updateStorage(cullDescriptorSet[0], 0, frustumBuffer, 256, true);
+    engine.updateStorage(cullDescriptorSet[1], 0, scene.instanceBuffer, scene.drawCount * sizeof(ler::Instance));
+    engine.updateStorage(cullDescriptorSet[1], 1, scene.indirectBuffer, scene.drawCount * sizeof(vk::DrawIndexedIndirectCommand));
+    engine.updateStorage(cullDescriptorSet[1], 2, visibleBuffer, 256);
 
     // FIRST PASS (Fill GBuffer)
     std::vector<ler::ShaderPtr> gbufferShaders;
@@ -207,11 +286,13 @@ int main()
     aabbShaders.push_back(engine.createShader(ASSETS / "shaders" / "aabb.vert.spv"));
     aabbShaders.push_back(engine.createShader(ASSETS / "shaders" / "aabb.frag.spv"));
 
-    info.subPass = 1;
+    info.subPass = 2;
     info.textureCount = 0;
     info.topology = vk::PrimitiveTopology::eLineList;
     auto quad = engine.createGraphicsPipeline(renderPass, aabbShaders, info);
 
+
+    // PREPARE RenderPass
     std::array<float, 4> color = {1.f, 1.f, 1.f, 1.f};
     std::vector<vk::ClearValue> clearValues;
     for(const auto& attachment : renderPass.attachments)
@@ -235,9 +316,17 @@ int main()
     constant.view = camera.getViewMatrix();
     constant.proj[1][1] *= -1;
 
+    ler::Frustum frustum;
+    ler::DeferredConstant defConstant;
+
+    std::array<const char*,4> items = {"Deferred", "Position", "Normal", "Albedo"};
+    static const char* current_item = items[0];
+
+    bool showAABB = true;
     vk::Result result;
-    vk::CommandBuffer cmd;
+    uint32_t resetNum = 0;
     vk::DeviceSize offset = 0;
+    uint32_t numVisibleMeshes = 0;
     while(!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
@@ -249,11 +338,32 @@ int main()
         glfwGetCursorPos(window, &xpos, &ypos);
         camera.mouseCallback(xpos, ypos);
         constant.view = camera.getViewMatrix();
+        defConstant.viewPos = camera.position;
 
         result = device->acquireNextImageKHR(swapChain.handle.get(), std::numeric_limits<uint64_t>::max(), presentSemaphore.get(), vk::Fence(), &swapChainIndex);
         assert(result == vk::Result::eSuccess);
 
         cmd = engine.getCommandBuffer();
+
+        // Frustum Culling
+        engine.getFromBuffer(visibleBuffer, &numVisibleMeshes);
+        frustum.num = scene.instances.size();
+        ler::LerContext::getFrustumPlanes(constant.proj * constant.view, frustum.planes);
+        ler::LerContext::getFrustumCorners(constant.proj * constant.view, frustum.corners);
+        engine.uploadBuffer(visibleBuffer, &resetNum, sizeof(uint32_t));
+        engine.uploadBuffer(frustumBuffer, &frustum, sizeof(ler::Frustum));
+
+        cmd.bindPipeline(culling->bindPoint, culling->handle.get());
+        cmd.bindDescriptorSets(culling->bindPoint, culling->pipelineLayout.get(), 0, cullDescriptorSet, nullptr);
+        cmd.dispatch(1 + scene.instances.size() / 64, 1, 1);
+
+        using ps = vk::PipelineStageFlagBits;
+        std::vector<vk::BufferMemoryBarrier> bufferBarriers;
+        uint32_t byteSize = scene.commands.size() * sizeof(vk::DrawIndexedIndirectCommand);
+        bufferBarriers.emplace_back(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, scene.indirectBuffer.handle, 0, byteSize);
+        cmd.pipelineBarrier(ps::eComputeShader, ps::eVertexShader, vk::DependencyFlags(), {}, bufferBarriers, {});
+
+        // Begin RenderPass
         vk::RenderPassBeginInfo beginInfo;
         beginInfo.setRenderPass(renderPass.handle.get());
         beginInfo.setFramebuffer(frameBuffers[swapChainIndex].handle.get());
@@ -276,10 +386,44 @@ int main()
         cmd.nextSubpass(vk::SubpassContents::eInline);
         cmd.bindPipeline(deferred->bindPoint, deferred->handle.get());
         cmd.bindDescriptorSets(deferred->bindPoint, deferred->pipelineLayout.get(), 0, inputColor[swapChainIndex], nullptr);
+        cmd.pushConstants(deferred->pipelineLayout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(ler::DeferredConstant), &defConstant);
         cmd.draw(4, 1, 0, 0);
-        /*cmd.bindPipeline(quad->bindPoint, quad->handle.get());
+
+        cmd.nextSubpass(vk::SubpassContents::eInline);
+        cmd.bindPipeline(quad->bindPoint, quad->handle.get());
         cmd.bindVertexBuffers(0, 1, &scene.aabbBuffer.handle, &offset);
-        cmd.draw(scene.lineCount, 1, 0, 0);*/
+        cmd.pushConstants(quad->pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex, 0, sizeof(ler::SceneConstant), &constant);
+        cmd.draw(showAABB ? scene.lineCount : 0, 1, 0, 0);
+
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        ImGui::Begin("Scene Renderer");
+        if (ImGui::BeginCombo("##custom combo", current_item))
+        {
+            for (size_t n = 0; n < items.size(); n++)
+            {
+                bool is_selected = (current_item == items[n]);
+                if (ImGui::Selectable(items[n], is_selected))
+                {
+                    current_item = items[n];
+                    defConstant.viewMode = n;
+                }
+                if (is_selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::Checkbox("Show Bounding Box", &showAABB);
+        ImGui::Text("Visible Meshes: %d", numVisibleMeshes);
+        ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+        ImGui::End();
+
+        ImGui::Render();
+        // Record dear imgui primitives into command buffer
+        ImDrawData* draw_data = ImGui::GetDrawData();
+        ImGui_ImplVulkan_RenderDrawData(draw_data, cmd);
 
         cmd.endRenderPass();
         engine.submitAndWait(cmd);
@@ -300,11 +444,17 @@ int main()
 
     device->waitIdle();
     engine.destroyScene(scene);
+    engine.destroyBuffer(visibleBuffer);
+    engine.destroyBuffer(frustumBuffer);
 
     // Clean
     //context->DestroyAllInstanceHandles();
     //context->DestroyAllGeometryHandles();
     //KS::ExecuteContext::Destruct(context);
+
+    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
 
     glfwDestroyWindow(window);
     glfwTerminate();

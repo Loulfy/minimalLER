@@ -18,6 +18,7 @@ struct Light
 layout (push_constant) uniform constants
 {
     vec3 viewPos;
+    uint viewMode;
 } pc;
 
 /*layout (binding = 4) uniform UBO
@@ -37,6 +38,25 @@ void main()
     vec3 fragPos = subpassLoad(samplerPosition, gl_SampleID).rgb;
     vec3 normal = subpassLoad(samplerNormal, gl_SampleID).rgb;
     vec4 albedo = subpassLoad(samplerAlbedo, gl_SampleID);
+
+    if (pc.viewMode > 0) {
+        switch (pc.viewMode) {
+            case 1:
+            outFragcolor.rgb = fragPos;
+            break;
+            case 2:
+            outFragcolor.rgb = normal;
+            break;
+            case 3:
+            outFragcolor.rgb = albedo.rgb;
+            break;
+            case 4:
+            outFragcolor.rgb = albedo.aaa;
+            break;
+        }
+        outFragcolor.a = 1.0;
+        return;
+    }
 
     /*vec3 fragPos = subpassLoad(samplerPosition).rgb;
     vec3 normal = subpassLoad(samplerNormal).rgb;

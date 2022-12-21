@@ -28,6 +28,7 @@ public:
     float lastX = 1200 / 2.0f;
     float lastY = 800 / 2.0f;
     bool firstMouse = true;
+    bool lockMouse = false;
 
     Camera()
     {
@@ -58,6 +59,9 @@ public:
 
     void mouseCallback(double xposIn, double yposIn)
     {
+        if(lockMouse)
+            return;
+
         auto xpos = static_cast<float>(xposIn);
         auto ypos = static_cast<float>(yposIn);
 

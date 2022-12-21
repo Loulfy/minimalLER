@@ -65,6 +65,13 @@ namespace ler
         m_allocator.destroy();
     }
 
+    void LerContext::destroyBuffer(Buffer& buffer)
+    {
+        m_allocator.destroyBuffer(buffer.handle, buffer.allocation);
+        buffer.allocation = nullptr;
+        buffer.handle = nullptr;
+    }
+
     Buffer LerContext::createBuffer(uint32_t byteSize, vk::BufferUsageFlags usages)
     {
         Buffer buffer;
@@ -93,6 +100,14 @@ namespace ler
             std::memcpy(dst, src, byteSize);
             m_allocator.unmapMemory(staging.allocation);
         }
+    }
+
+    void LerContext::getFromBuffer(Buffer& buffer, uint32_t* ptr)
+    {
+        void* data = m_allocator.mapMemory(buffer.allocation);
+        auto t = (uint32_t*) data;
+        *ptr = *t;
+        m_allocator.unmapMemory(buffer.allocation);
     }
 
     void LerContext::copyBuffer(Buffer& staging, Buffer& dst, uint64_t byteSize)
@@ -390,7 +405,7 @@ namespace ler
     {
         RenderPass renderPass;
         renderPass.attachments.resize(6);
-        std::array<vk::SubpassDescription2, 2> subPass;
+        std::array<vk::SubpassDescription2, 3> subPass;
         std::vector<vk::AttachmentReference2> colorAttachmentRef1(3);
         std::vector<vk::AttachmentReference2> colorAttachmentRef2(1);
         std::vector<vk::AttachmentReference2> colorInputRef(3);
@@ -497,15 +512,25 @@ namespace ler
         subPass[1] = vk::SubpassDescription2()
             .setPipelineBindPoint(vk::PipelineBindPoint::eGraphics)
             .setColorAttachments(colorAttachmentRef2)
-            .setResolveAttachments(resolveAttachmentRef)
+            //.setResolveAttachments(resolveAttachmentRef)
             .setPDepthStencilAttachment(&depthAttachmentRef)
             .setInputAttachments(colorInputRef);
 
         for(auto& output : colorAttachmentRef2)
             renderPass.subPass[1].insert(output.attachment);
 
+        // THIRD PASS
+        subPass[2] = vk::SubpassDescription2()
+            .setPipelineBindPoint(vk::PipelineBindPoint::eGraphics)
+            .setColorAttachments(colorAttachmentRef2)
+            .setResolveAttachments(resolveAttachmentRef)
+            .setPDepthStencilAttachment(&depthAttachmentRef);
+
+        for(auto& output : colorAttachmentRef2)
+            renderPass.subPass[2].insert(output.attachment);
+
         // DEPENDENCIES
-        std::array<vk::SubpassDependency2, 1> dependencies;
+        std::array<vk::SubpassDependency2, 2> dependencies;
         dependencies[0] = vk::SubpassDependency2()
             .setSrcSubpass(0)
             .setDstSubpass(1)
@@ -513,6 +538,14 @@ namespace ler
             .setDstStageMask(vk::PipelineStageFlagBits::eFragmentShader)
             .setSrcAccessMask(vk::AccessFlagBits::eColorAttachmentWrite)
             .setDstAccessMask(vk::AccessFlagBits::eShaderRead);
+
+        dependencies[1] = vk::SubpassDependency2()
+            .setSrcSubpass(1)
+            .setDstSubpass(2)
+            .setSrcStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
+            .setDstStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
+            .setSrcAccessMask(vk::AccessFlagBits::eColorAttachmentWrite)
+            .setDstAccessMask(vk::AccessFlagBits::eColorAttachmentWrite);
 
         vk::RenderPassCreateInfo2 renderPassInfo;
         renderPassInfo.setAttachments(renderPass.attachments);
@@ -912,12 +945,12 @@ namespace ler
         m_device.updateDescriptorSets(descriptorWrites, nullptr);
     }
 
-    void LerContext::updateStorage(vk::DescriptorSet descriptorSet, uint32_t binding, const Buffer& buffer, uint64_t byteSize)
+    void LerContext::updateStorage(vk::DescriptorSet descriptorSet, uint32_t binding, const Buffer& buffer, uint64_t byteSize, bool uniform)
     {
         std::vector<vk::WriteDescriptorSet> descriptorWrites;
 
         auto descriptorWriteInfo = vk::WriteDescriptorSet();
-        descriptorWriteInfo.setDescriptorType(vk::DescriptorType::eStorageBuffer);
+        descriptorWriteInfo.setDescriptorType(uniform ? vk::DescriptorType::eUniformBuffer : vk::DescriptorType::eStorageBuffer);
         descriptorWriteInfo.setDstBinding(binding);
         descriptorWriteInfo.setDstSet(descriptorSet);
         descriptorWriteInfo.setDescriptorCount(1);
@@ -1102,6 +1135,38 @@ namespace ler
         {
             min = glm::min(min, p);
             max = glm::max(max, p);
+        }
+    }
+
+    void LerContext::getFrustumPlanes(glm::mat4 mvp, glm::vec4* planes)
+    {
+        using glm::vec4;
+
+        mvp = glm::transpose(mvp);
+        planes[0] = vec4(mvp[3] + mvp[0]); // left
+        planes[1] = vec4(mvp[3] - mvp[0]); // right
+        planes[2] = vec4(mvp[3] + mvp[1]); // bottom
+        planes[3] = vec4(mvp[3] - mvp[1]); // top
+        planes[4] = vec4(mvp[3] + mvp[2]); // near
+        planes[5] = vec4(mvp[3] - mvp[2]); // far
+    }
+
+    void LerContext::getFrustumCorners(glm::mat4 mvp, glm::vec4* points)
+    {
+        using glm::vec4;
+
+        const vec4 corners[] = {
+                vec4(-1, -1, -1, 1), vec4(1, -1, -1, 1),
+                vec4(1,  1, -1, 1),  vec4(-1,  1, -1, 1),
+                vec4(-1, -1,  1, 1), vec4(1, -1,  1, 1),
+                vec4(1,  1,  1, 1),  vec4(-1,  1,  1, 1)
+        };
+
+        const glm::mat4 invMVP = glm::inverse(mvp);
+
+        for (int i = 0; i != 8; i++) {
+            const vec4 q = invMVP * corners[i];
+            points[i] = q / q.w;
         }
     }
 

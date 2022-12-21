@@ -20,10 +20,30 @@ find_package(Vulkan)
 #add_subdirectory(libs/KickstartRT)
 #include_directories(libs/KickstartRT/include)KickstartRT_core_VULKAN
 add_subdirectory(libs/SPIRV-Reflect)
+include_directories(libs/imgui)
+include_directories(libs/imgui/backends)
 include_directories(libs/VulkanMemoryAllocator-Hpp/include)
 include_directories(libs/VulkanMemoryAllocator-Hpp/VulkanMemoryAllocator/include)
 
 add_definitions(-DPROJECT_DIR=\"${PROJECT_SOURCE_DIR}\")
 
-add_executable(minimalRT src/main.cpp src/ler.hpp src/ler.cpp src/format.cpp src/camera.h)
+set(IMGUI
+    "libs/imgui/imconfig.h"
+    "libs/imgui/imgui.h"
+    "libs/imgui/imgui_internal.h"
+    "libs/imgui/imstb_rectpack.h"
+    "libs/imgui/imstb_textedit.h"
+    "libs/imgui/imstb_truetype.h"
+    "libs/imgui/imgui.cpp"
+    "libs/imgui/imgui_demo.cpp"
+    "libs/imgui/imgui_draw.cpp"
+    "libs/imgui/imgui_tables.cpp"
+    "libs/imgui/imgui_widgets.cpp"
+    "libs/imgui/backends/imgui_impl_vulkan.h"
+    "libs/imgui/backends/imgui_impl_vulkan.cpp"
+    "libs/imgui/backends/imgui_impl_glfw.h"
+    "libs/imgui/backends/imgui_impl_glfw.cpp"
+)
+
+add_executable(minimalRT src/main.cpp src/ler.hpp src/ler.cpp src/format.cpp src/camera.h ${IMGUI})
 target_link_libraries(minimalRT Vulkan::Vulkan ${CONAN_LIBS} spirv-reflect-static)
