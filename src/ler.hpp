@@ -165,6 +165,7 @@ namespace ler
     {
         alignas(16) glm::vec3 viewPos = glm::vec3(1.f);
         alignas(4) glm::uint viewMode = 0;
+        alignas(4) glm::uint lightCount = 1;
     };
 
     struct SceneConstant
@@ -182,9 +183,9 @@ namespace ler
 
     struct Light
     {
-        alignas(16) glm::vec4 pos = glm::vec4(0.f);
+        alignas(16) glm::vec3 pos = glm::vec3(1.f);
         alignas(16) glm::vec3 color = glm::vec3(1.f);
-        alignas(4) float radius = 20.f;
+        alignas(4) float radius = 10.f;
     };
 
     struct Scene

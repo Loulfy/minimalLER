@@ -6,15 +6,12 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #include <GLFW/glfw3.h>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_impl_vulkan.h>
 #include <imgui_impl_glfw.h>
 #include <ImGuizmo.h>
 
 #include "camera.h"
-
-#define KickstartRT_Graphics_API_Vulkan
-//#include <KickstartRT.h>
-//namespace KS = KickstartRT::VK;
 
 static const fs::path ASSETS = fs::path(PROJECT_DIR) / "assets";
 static const uint32_t WIDTH = 1280;
@@ -40,6 +37,20 @@ void glfw_key_callback(GLFWwindow* window, int key, int scancode, int action, in
             camera->lockMouse = false;
         }
     }
+}
+
+template<typename ContainerType>
+void swapAndPop(ContainerType & container, size_t index)
+{
+    // ensure that we're not attempting to access out of the bounds of the container.
+    assert(index < container.size());
+
+    //Swap the element with the back element, except in the case when we're the last element.
+    if (index + 1 != container.size())
+        std::swap(container[index], container.back());
+
+    //Pop the back of the container, deleting our old element.
+    container.pop_back();
 }
 
 int main()
@@ -170,11 +181,8 @@ int main()
     auto scene = engine.fromFile("C:/Users/loria/glTF-Sample-Models/2.0/Sponza/glTF/Sponza.gltf");
     //auto scene = engine.fromFile(ASSETS / "Lantern.glb");
 
-    ler::Light light;
-    light.pos = glm::vec4(0.f, 1.f, 0.3f, 0.f);
     std::vector<ler::Light> lighting;
-    lighting.emplace_back();
-    lighting.emplace_back();
+    lighting.push_back({.pos = glm::vec4(0.f, 1.f, 0.3f, 0.f)});
 
     vk::CommandBuffer cmd;
     uint32_t swapChainIndex = 0;
@@ -289,7 +297,7 @@ int main()
     }
 
     auto lightBuffer = engine.createBuffer(256, vk::BufferUsageFlagBits::eUniformBuffer);
-    engine.uploadBuffer(lightBuffer, &light, sizeof(ler::Light));
+    engine.uploadBuffer(lightBuffer, lighting.data(), sizeof(ler::Light)*lighting.size());
 
     vk::DescriptorSet inputLight;
     inputLight = deferred->createDescriptorSet(device.get(), 1);
@@ -323,10 +331,8 @@ int main()
     Camera camera;
     glfwSetWindowUserPointer(window, &camera);
     double xpos, ypos;
-    float deltaTime = 0.f;
-    float lastFrame = 0.f;
     ler::SceneConstant constant;
-    constant.proj = glm::perspective(glm::radians(55.f), 1920.f / 1080.f, 0.01f, 10000.0f); // 0, 50, -50
+    constant.proj = glm::perspective(glm::radians(55.f), 1920.f / 1080.f, 0.01f, 10000.0f);
     constant.view = camera.getViewMatrix();
     constant.proj[1][1] *= -1;
 
@@ -342,18 +348,16 @@ int main()
     vk::DeviceSize offset = 0;
     uint32_t numVisibleMeshes = 0;
     int node_clicked = -1;
+    glm::mat4 trans = glm::mat4(1.f);
     while(!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
-
-        auto currentFrame = static_cast<float>(glfwGetTime());
-        deltaTime = currentFrame - lastFrame;
-        lastFrame = currentFrame;
 
         glfwGetCursorPos(window, &xpos, &ypos);
         camera.mouseCallback(xpos, ypos);
         constant.view = camera.getViewMatrix();
         defConstant.viewPos = camera.position;
+        defConstant.lightCount = lighting.size();
 
         result = device->acquireNextImageKHR(swapChain.handle.get(), std::numeric_limits<uint64_t>::max(), presentSemaphore.get(), vk::Fence(), &swapChainIndex);
         assert(result == vk::Result::eSuccess);
@@ -414,9 +418,10 @@ int main()
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
-        //ImGuizmo::BeginFrame();
 
-        ImGui::Begin("Scene Renderer");
+        ImGui::SetNextWindowPos(ImVec2(30, 30), ImGuiCond_Appearing);
+        ImGui::SetNextWindowSize(ImVec2(0, 300), ImGuiCond_Always);
+        ImGui::Begin("Scene Renderer", nullptr, ImGuiWindowFlags_NoResize);
         if (ImGui::BeginCombo("##custom combo", current_item))
         {
             for (size_t n = 0; n < items.size(); n++)
@@ -433,25 +438,22 @@ int main()
             ImGui::EndCombo();
         }
 
-        auto trans = glm::translate(glm::mat4(1.f), glm::vec3(light.pos));
-        auto view = constant.view;
+        //ImGuizmo uses OpenGL Y-axis
         glm::mat4 proj = constant.proj;
         proj[1][1] *= -1;
 
         ImGui::Checkbox("Show Bounding Box", &showAABB);
         ImGui::Text("Visible Meshes: %d", numVisibleMeshes);
-        if(ImGui::CollapsingHeader("Light"))
+        ImGui::Text("Light Count: %zu", lighting.size());
+        ImGui::AlignTextToFramePadding();
+        bool treeOpen = ImGui::TreeNodeEx("Scene", ImGuiTreeNodeFlags_AllowItemOverlap);
+        ImGui::SameLine();
+        if(ImGui::Button("Add Light"))
         {
-            ImGuizmo::BeginFrame();
-            ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);
-            ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), ImGuizmo::OPERATION::TRANSLATE, ImGuizmo::WORLD, glm::value_ptr(trans));
-            if(ImGui::ColorEdit3("Color", glm::value_ptr(light.color), ImGuiColorEditFlags_Float))
-                engine.uploadBuffer(lightBuffer, &light, sizeof(ler::Light));
-            if(ImGui::SliderFloat("Radius", &light.radius, 0, 100))
-                engine.uploadBuffer(lightBuffer, &light, sizeof(ler::Light));
+            lighting.emplace_back();
+            engine.uploadBuffer(lightBuffer, lighting.data(), sizeof(ler::Light)*lighting.size());
         }
-
-        if(ImGui::TreeNode("Scene"))
+        if(treeOpen)
         {
             for (int i = 0; i < lighting.size(); i++)
             {
@@ -460,57 +462,42 @@ int main()
                 if (is_selected)
                     node_flags |= ImGuiTreeNodeFlags_Selected;
                 node_flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_Bullet;
-                ImGui::TreeNodeEx((void*)(intptr_t)i, node_flags, "Selectable Leaf %d", i);
+                ImGui::TreeNodeEx((void*)(intptr_t)i, node_flags, "Light %d", i);
                 if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
                     node_clicked = i;
             }
             if (node_clicked != -1)
             {
-                // Update selection state
-                // (process outside of tree loop to avoid visual inconsistencies during the clicking frame)
-                //if (ImGui::GetIO().KeyCtrl)
-                  //  selection_mask ^= (1 << node_clicked);          // CTRL+click to toggle
-                //else //if (!(selection_mask & (1 << node_clicked))) // Depending on selection behavior you want, may want to preserve selection when clicking on item that is part of the selection
-                    //selection_mask = (1 << node_clicked);           // Click to single-select
+                ImGuizmo::BeginFrame();
+                ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);
+                trans = glm::translate(glm::mat4(1.f), glm::vec3(lighting[node_clicked].pos));
+                ImGuizmo::Manipulate(glm::value_ptr(constant.view), glm::value_ptr(proj), ImGuizmo::OPERATION::TRANSLATE, ImGuizmo::WORLD, glm::value_ptr(trans));
+                if(ImGui::ColorEdit3("Color", glm::value_ptr(lighting[node_clicked].color), ImGuiColorEditFlags_Float))
+                    engine.uploadBuffer(lightBuffer, lighting.data(), sizeof(ler::Light)*lighting.size());
+                if(ImGui::SliderFloat("Radius", &lighting[node_clicked].radius, 0, 100))
+                    engine.uploadBuffer(lightBuffer, lighting.data(), sizeof(ler::Light)*lighting.size());
+                if(ImGui::InputFloat3("Position", glm::value_ptr(lighting[node_clicked].pos)))
+                    engine.uploadBuffer(lightBuffer, lighting.data(), sizeof(ler::Light)*lighting.size());
+                auto lineSize = ImGui::GetContentRegionAvail();
+                if(ImGui::Button("Remove", ImVec2(lineSize.x, 0)))
+                {
+                    swapAndPop(lighting, node_clicked);
+                    engine.uploadBuffer(lightBuffer, lighting.data(), sizeof(ler::Light)*lighting.size());
+                    node_clicked = -1;
+                }
+                if(ImGuizmo::IsUsing())
+                {
+                    lighting[node_clicked].pos = glm::vec3(trans[3]);
+                    engine.uploadBuffer(lightBuffer, lighting.data(), sizeof(ler::Light)*lighting.size());
+                }
+                if(ImGui::GetIO().KeyCtrl)
+                    node_clicked = -1;
             }
-
-            /*for (int i = 0; i < ImGuiMouseCursor_COUNT; i++)
-            {
-                char label[32];
-                sprintf(label, "Mouse cursor %d", i);
-                ImGui::Bullet();
-                if(ImGui::Selectable(label))
-                    std::cout << "selected" << std::endl;
-                if (ImGui::IsItemHovered())
-                    ImGui::SetMouseCursor(i);
-            }*/
             ImGui::TreePop();
         }
 
         ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
         ImGui::End();
-
-        /*
-        //ImGui::Begin("Guizmo");
-        //ImGuizmo::SetDrawlist();
-        ImGuizmo::BeginFrame();
-        ImGuizmo::Enable(true);
-        //ImGuizmo::SetOrthographic(true);
-        ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);
-        auto trans = glm::mat4(1.f);
-        auto view = constant.view;
-        glm::mat4 proj = constant.proj;
-        proj[1][1] *= -1;
-        //ImGuizmo::DrawGrid(&view[0][0], glm::value_ptr(proj), glm::value_ptr(trans), 100);
-        trans = glm::translate(trans, glm::vec3(light.pos));
-        //ImGuizmo::DrawCubes(glm::value_ptr(constant.view), glm::value_ptr(constant.proj), glm::value_ptr(trans), 1);
-        ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), ImGuizmo::OPERATION::TRANSLATE, ImGuizmo::WORLD, glm::value_ptr(trans));*/
-        if(ImGuizmo::IsUsing())
-        {
-            light.pos = glm::vec4(trans[3]);
-            engine.uploadBuffer(lightBuffer, &light, sizeof(ler::Light));
-        }
-        //ImGui::End();
 
         ImGui::Render();
         // Record dear imgui primitives into command buffer
@@ -536,11 +523,6 @@ int main()
     engine.destroyBuffer(lightBuffer);
     engine.destroyBuffer(visibleBuffer);
     engine.destroyBuffer(frustumBuffer);
-
-    // Clean
-    //context->DestroyAllInstanceHandles();
-    //context->DestroyAllGeometryHandles();
-    //KS::ExecuteContext::Destruct(context);
 
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplGlfw_Shutdown();

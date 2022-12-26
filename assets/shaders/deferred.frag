@@ -1,16 +1,16 @@
 #version 460
+#define ambient 0.f
 
 layout (input_attachment_index = 0, set = 0, binding = 0) uniform subpassInputMS samplerPosition;
 layout (input_attachment_index = 1, set = 0, binding = 1) uniform subpassInputMS samplerNormal;
 layout (input_attachment_index = 2, set = 0, binding = 2) uniform subpassInputMS samplerAlbedo;
 
 layout (location = 0) in vec2 inUV;
-
 layout (location = 0) out vec4 outFragcolor;
 
 struct Light
 {
-    vec4 position;
+    vec3 position;
     vec3 color;
     float radius;
 };
@@ -19,6 +19,7 @@ layout (push_constant) uniform constants
 {
     vec3 viewPos;
     uint viewMode;
+    uint lightCount;
 } pc;
 
 layout (set = 1, binding = 0) uniform UBO
@@ -26,8 +27,9 @@ layout (set = 1, binding = 0) uniform UBO
     Light lights[6];
 } ubo;
 
+// Debug
 const Light lights[1] = Light[](
-    Light(vec4(0.f, 1.f, 0.3f, 0.f), vec3(1,1,1), 20) // -0.2f, -1.0f, -0.3f // 0.f, 15.f, 0.3f, 1.f
+    Light(vec3(0.f, 1.f, 0.3f), vec3(1,1,1), 20) // -0.2f, -1.0f, -0.3f // 0.f, 15.f, 0.3f, 1.f
 );
 
 void main()
@@ -56,44 +58,10 @@ void main()
         return;
     }
 
-    /*vec3 fragPos = subpassLoad(samplerPosition).rgb;
-    vec3 normal = subpassLoad(samplerNormal).rgb;
-    vec4 albedo = subpassLoad(samplerAlbedo);*/
-
-    //outFragcolor = vec4(normal, 1);
-    //outFragcolor = albedo;
-    //outFragcolor = vec4(1,0,1,1);
-    //return;
-
-    // Debug display
-    /*if (ubo.displayDebugTarget > 0) {
-        switch (ubo.displayDebugTarget) {
-            case 1:
-            outFragcolor.rgb = fragPos;
-            break;
-            case 2:
-            outFragcolor.rgb = normal;
-            break;
-            case 3:
-            outFragcolor.rgb = albedo.rgb;
-            break;
-            case 4:
-            outFragcolor.rgb = albedo.aaa;
-            break;
-        }
-        outFragcolor.a = 1.0;
-        return;
-    }*/
-
-        // Render-target composition
-
-        #define lightCount 1
-        #define ambient 0.0
-
     // Ambient part
     vec3 fragcolor  = albedo.rgb * ambient;
 
-    for(int i = 0; i < lightCount; ++i)
+    for(int i = 0; i < pc.lightCount; ++i)
     {
         // Vector to light
         vec3 L = ubo.lights[i].position.xyz - fragPos;
