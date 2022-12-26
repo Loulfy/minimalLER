@@ -180,6 +180,13 @@ namespace ler
         alignas(4) glm::uint num = 0;
     };
 
+    struct Light
+    {
+        alignas(16) glm::vec4 pos = glm::vec4(0.f);
+        alignas(16) glm::vec3 color = glm::vec3(1.f);
+        alignas(4) float radius = 20.f;
+    };
+
     struct Scene
     {
         Buffer staging;

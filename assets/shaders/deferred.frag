@@ -21,12 +21,10 @@ layout (push_constant) uniform constants
     uint viewMode;
 } pc;
 
-/*layout (binding = 4) uniform UBO
+layout (set = 1, binding = 0) uniform UBO
 {
     Light lights[6];
-    vec4 viewPos;
-    int displayDebugTarget;
-} ubo;*/
+} ubo;
 
 const Light lights[1] = Light[](
     Light(vec4(0.f, 1.f, 0.3f, 0.f), vec3(1,1,1), 20) // -0.2f, -1.0f, -0.3f // 0.f, 15.f, 0.3f, 1.f
@@ -98,7 +96,7 @@ void main()
     for(int i = 0; i < lightCount; ++i)
     {
         // Vector to light
-        vec3 L = lights[i].position.xyz - fragPos;
+        vec3 L = ubo.lights[i].position.xyz - fragPos;
         //vec3 L = -lights[i].position.xyz;
         // Distance from light to fragment position
         float dist = length(L);
@@ -113,18 +111,18 @@ void main()
             L = normalize(L);
 
             // Attenuation
-            float atten = lights[i].radius / (pow(dist, 2.0) + 1.0);
+            float atten = ubo.lights[i].radius / (pow(dist, 2.0) + 1.0);
 
             // Diffuse part
             vec3 N = normalize(normal);
             float NdotL = max(0.0, dot(N, L));
-            vec3 diff = lights[i].color * albedo.rgb * NdotL * atten;
+            vec3 diff = ubo.lights[i].color * albedo.rgb * NdotL * atten;
 
             // Specular part
             // Specular map values are stored in alpha of albedo mrt
             vec3 R = reflect(-L, N);
             float NdotR = max(0.0, dot(R, V));
-            vec3 spec = lights[i].color * albedo.a * pow(NdotR, 16.0) * atten;
+            vec3 spec = ubo.lights[i].color * albedo.a * pow(NdotR, 16.0) * atten;
 
             fragcolor += diff;// + spec;
         }

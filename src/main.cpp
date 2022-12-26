@@ -8,6 +8,7 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #include <imgui.h>
 #include <imgui_impl_vulkan.h>
 #include <imgui_impl_glfw.h>
+#include <ImGuizmo.h>
 
 #include "camera.h"
 
@@ -169,6 +170,12 @@ int main()
     auto scene = engine.fromFile("C:/Users/loria/glTF-Sample-Models/2.0/Sponza/glTF/Sponza.gltf");
     //auto scene = engine.fromFile(ASSETS / "Lantern.glb");
 
+    ler::Light light;
+    light.pos = glm::vec4(0.f, 1.f, 0.3f, 0.f);
+    std::vector<ler::Light> lighting;
+    lighting.emplace_back();
+    lighting.emplace_back();
+
     vk::CommandBuffer cmd;
     uint32_t swapChainIndex = 0;
     auto swapChain = engine.createSwapChain(glfwSurface, WIDTH, HEIGHT);
@@ -281,6 +288,13 @@ int main()
         engine.updateAttachment(inputColor[i], 2, frameBuffers[i].images[2]);
     }
 
+    auto lightBuffer = engine.createBuffer(256, vk::BufferUsageFlagBits::eUniformBuffer);
+    engine.uploadBuffer(lightBuffer, &light, sizeof(ler::Light));
+
+    vk::DescriptorSet inputLight;
+    inputLight = deferred->createDescriptorSet(device.get(), 1);
+    engine.updateStorage(inputLight, 0, lightBuffer, 256, true);
+
     // THIRD PASS (Bounding Box)
     std::vector<ler::ShaderPtr> aabbShaders;
     aabbShaders.push_back(engine.createShader(ASSETS / "shaders" / "aabb.vert.spv"));
@@ -322,11 +336,12 @@ int main()
     std::array<const char*,4> items = {"Deferred", "Position", "Normal", "Albedo"};
     static const char* current_item = items[0];
 
-    bool showAABB = true;
+    bool showAABB = false;
     vk::Result result;
     uint32_t resetNum = 0;
     vk::DeviceSize offset = 0;
     uint32_t numVisibleMeshes = 0;
+    int node_clicked = -1;
     while(!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
@@ -386,6 +401,7 @@ int main()
         cmd.nextSubpass(vk::SubpassContents::eInline);
         cmd.bindPipeline(deferred->bindPoint, deferred->handle.get());
         cmd.bindDescriptorSets(deferred->bindPoint, deferred->pipelineLayout.get(), 0, inputColor[swapChainIndex], nullptr);
+        cmd.bindDescriptorSets(deferred->bindPoint, deferred->pipelineLayout.get(), 1, inputLight, nullptr);
         cmd.pushConstants(deferred->pipelineLayout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(ler::DeferredConstant), &defConstant);
         cmd.draw(4, 1, 0, 0);
 
@@ -398,6 +414,7 @@ int main()
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+        //ImGuizmo::BeginFrame();
 
         ImGui::Begin("Scene Renderer");
         if (ImGui::BeginCombo("##custom combo", current_item))
@@ -415,10 +432,85 @@ int main()
             }
             ImGui::EndCombo();
         }
+
+        auto trans = glm::translate(glm::mat4(1.f), glm::vec3(light.pos));
+        auto view = constant.view;
+        glm::mat4 proj = constant.proj;
+        proj[1][1] *= -1;
+
         ImGui::Checkbox("Show Bounding Box", &showAABB);
         ImGui::Text("Visible Meshes: %d", numVisibleMeshes);
+        if(ImGui::CollapsingHeader("Light"))
+        {
+            ImGuizmo::BeginFrame();
+            ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);
+            ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), ImGuizmo::OPERATION::TRANSLATE, ImGuizmo::WORLD, glm::value_ptr(trans));
+            if(ImGui::ColorEdit3("Color", glm::value_ptr(light.color), ImGuiColorEditFlags_Float))
+                engine.uploadBuffer(lightBuffer, &light, sizeof(ler::Light));
+            if(ImGui::SliderFloat("Radius", &light.radius, 0, 100))
+                engine.uploadBuffer(lightBuffer, &light, sizeof(ler::Light));
+        }
+
+        if(ImGui::TreeNode("Scene"))
+        {
+            for (int i = 0; i < lighting.size(); i++)
+            {
+                ImGuiTreeNodeFlags node_flags = 0;
+                const bool is_selected = i == node_clicked;
+                if (is_selected)
+                    node_flags |= ImGuiTreeNodeFlags_Selected;
+                node_flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_Bullet;
+                ImGui::TreeNodeEx((void*)(intptr_t)i, node_flags, "Selectable Leaf %d", i);
+                if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
+                    node_clicked = i;
+            }
+            if (node_clicked != -1)
+            {
+                // Update selection state
+                // (process outside of tree loop to avoid visual inconsistencies during the clicking frame)
+                //if (ImGui::GetIO().KeyCtrl)
+                  //  selection_mask ^= (1 << node_clicked);          // CTRL+click to toggle
+                //else //if (!(selection_mask & (1 << node_clicked))) // Depending on selection behavior you want, may want to preserve selection when clicking on item that is part of the selection
+                    //selection_mask = (1 << node_clicked);           // Click to single-select
+            }
+
+            /*for (int i = 0; i < ImGuiMouseCursor_COUNT; i++)
+            {
+                char label[32];
+                sprintf(label, "Mouse cursor %d", i);
+                ImGui::Bullet();
+                if(ImGui::Selectable(label))
+                    std::cout << "selected" << std::endl;
+                if (ImGui::IsItemHovered())
+                    ImGui::SetMouseCursor(i);
+            }*/
+            ImGui::TreePop();
+        }
+
         ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
         ImGui::End();
+
+        /*
+        //ImGui::Begin("Guizmo");
+        //ImGuizmo::SetDrawlist();
+        ImGuizmo::BeginFrame();
+        ImGuizmo::Enable(true);
+        //ImGuizmo::SetOrthographic(true);
+        ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);
+        auto trans = glm::mat4(1.f);
+        auto view = constant.view;
+        glm::mat4 proj = constant.proj;
+        proj[1][1] *= -1;
+        //ImGuizmo::DrawGrid(&view[0][0], glm::value_ptr(proj), glm::value_ptr(trans), 100);
+        trans = glm::translate(trans, glm::vec3(light.pos));
+        //ImGuizmo::DrawCubes(glm::value_ptr(constant.view), glm::value_ptr(constant.proj), glm::value_ptr(trans), 1);
+        ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), ImGuizmo::OPERATION::TRANSLATE, ImGuizmo::WORLD, glm::value_ptr(trans));*/
+        if(ImGuizmo::IsUsing())
+        {
+            light.pos = glm::vec4(trans[3]);
+            engine.uploadBuffer(lightBuffer, &light, sizeof(ler::Light));
+        }
+        //ImGui::End();
 
         ImGui::Render();
         // Record dear imgui primitives into command buffer
@@ -437,13 +529,11 @@ int main()
 
         result = queue.presentKHR(&presentInfo);
         assert(result == vk::Result::eSuccess);
-
-        if(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
     }
 
     device->waitIdle();
     engine.destroyScene(scene);
+    engine.destroyBuffer(lightBuffer);
     engine.destroyBuffer(visibleBuffer);
     engine.destroyBuffer(frustumBuffer);
 

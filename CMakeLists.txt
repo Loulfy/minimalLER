@@ -22,6 +22,7 @@ find_package(Vulkan)
 add_subdirectory(libs/SPIRV-Reflect)
 include_directories(libs/imgui)
 include_directories(libs/imgui/backends)
+include_directories(libs/ImGuizmo)
 include_directories(libs/VulkanMemoryAllocator-Hpp/include)
 include_directories(libs/VulkanMemoryAllocator-Hpp/VulkanMemoryAllocator/include)
 
@@ -43,6 +44,8 @@ set(IMGUI
     "libs/imgui/backends/imgui_impl_vulkan.cpp"
     "libs/imgui/backends/imgui_impl_glfw.h"
     "libs/imgui/backends/imgui_impl_glfw.cpp"
+    "libs/ImGuizmo/ImGuizmo.h"
+    "libs/ImGuizmo/ImGuizmo.cpp"
 )
 
 add_executable(minimalRT src/main.cpp src/ler.hpp src/ler.cpp src/format.cpp src/camera.h ${IMGUI})
