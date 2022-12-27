@@ -1155,7 +1155,7 @@ namespace ler
 
         TexturePtr tex;
         auto em = aiScene->GetEmbeddedTexture(key);
-        std::cout << "Load image : " << key << std::endl;
+        std::cout << "Load image: " << key << std::endl;
         if(em == nullptr)
         {
             fs::path f = path.parent_path() / fs::path(key);
@@ -1319,6 +1319,8 @@ namespace ler
     {
         Scene scene;
         Assimp::Importer importer;
+        fs::path cleanPath = path;
+        std::cout << "Load scene: " << cleanPath.make_preferred().string() << std::endl;
         unsigned int postProcess = aiProcessPreset_TargetRealtime_Fast;
         postProcess |= aiProcess_ConvertToLeftHanded;
         postProcess |= aiProcess_GenBoundingBoxes;
