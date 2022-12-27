@@ -122,9 +122,9 @@ int main()
     uint32_t graphicsQueueFamily = std::distance(queueFamilies.begin(), family);
 
     // Create queues
-    float queuePriority = 1.0f;
+    float queuePriority[] = {1.0f, 0.5f};
     std::initializer_list<vk::DeviceQueueCreateInfo> queueCreateInfos = {
-        { {}, graphicsQueueFamily, 1, &queuePriority }
+        { {}, graphicsQueueFamily, 2, queuePriority }
     };
 
     // Create Device
@@ -243,8 +243,8 @@ int main()
     // FRUSTUM CULLING
     auto cShader = engine.createShader(ASSETS / "shaders" / "triangle_cull.comp.spv");
     auto culling = engine.createComputePipeline(cShader);
-    auto visibleBuffer = engine.createBuffer(256, vk::BufferUsageFlagBits::eStorageBuffer);
-    auto frustumBuffer = engine.createBuffer(256, vk::BufferUsageFlagBits::eUniformBuffer);
+    auto visibleBuffer = engine.createBuffer(256, vk::BufferUsageFlagBits::eStorageBuffer, true);
+    auto frustumBuffer = engine.createBuffer(256, vk::BufferUsageFlagBits::eUniformBuffer, true);
     std::array<vk::DescriptorSet,2> cullDescriptorSet;
     for(size_t i = 0; i < cullDescriptorSet.size(); ++i)
         cullDescriptorSet[i] = culling->createDescriptorSet(device.get(), i);
@@ -296,7 +296,7 @@ int main()
         engine.updateAttachment(inputColor[i], 2, frameBuffers[i].images[2]);
     }
 
-    auto lightBuffer = engine.createBuffer(256, vk::BufferUsageFlagBits::eUniformBuffer);
+    auto lightBuffer = engine.createBuffer(256, vk::BufferUsageFlagBits::eUniformBuffer, true);
     engine.uploadBuffer(lightBuffer, lighting.data(), sizeof(ler::Light)*lighting.size());
 
     vk::DescriptorSet inputLight;
@@ -448,7 +448,7 @@ int main()
         ImGui::AlignTextToFramePadding();
         bool treeOpen = ImGui::TreeNodeEx("Scene", ImGuiTreeNodeFlags_AllowItemOverlap);
         ImGui::SameLine();
-        if(ImGui::Button("Add Light"))
+        if(ImGui::Button("Add Light") && lighting.size() < 6)
         {
             lighting.emplace_back();
             engine.uploadBuffer(lightBuffer, lighting.data(), sizeof(ler::Light)*lighting.size());
@@ -474,7 +474,7 @@ int main()
                 ImGuizmo::Manipulate(glm::value_ptr(constant.view), glm::value_ptr(proj), ImGuizmo::OPERATION::TRANSLATE, ImGuizmo::WORLD, glm::value_ptr(trans));
                 if(ImGui::ColorEdit3("Color", glm::value_ptr(lighting[node_clicked].color), ImGuiColorEditFlags_Float))
                     engine.uploadBuffer(lightBuffer, lighting.data(), sizeof(ler::Light)*lighting.size());
-                if(ImGui::SliderFloat("Radius", &lighting[node_clicked].radius, 0, 100))
+                if(ImGui::SliderFloat("Radius", &lighting[node_clicked].radius, 0, 400))
                     engine.uploadBuffer(lightBuffer, lighting.data(), sizeof(ler::Light)*lighting.size());
                 if(ImGui::InputFloat3("Position", glm::value_ptr(lighting[node_clicked].pos)))
                     engine.uploadBuffer(lightBuffer, lighting.data(), sizeof(ler::Light)*lighting.size());
@@ -496,6 +496,7 @@ int main()
             ImGui::TreePop();
         }
 
+        ImGui::SliderFloat("Camera Speed", &camera.movementSpeed, 10, 1000);
         ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
         ImGui::End();
 

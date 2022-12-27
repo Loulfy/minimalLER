@@ -15,6 +15,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/string_cast.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <taskflow/taskflow.hpp>
 
 #include <set>
 #include <map>
@@ -208,6 +209,7 @@ namespace ler
         uint32_t lineCount = 0;
         uint32_t matCount = 0;
 
+        std::vector<uint32_t> mapping;
         std::vector<TexturePtr> textures;
         std::vector<Instance> instances;
         std::vector<Material> materials;
@@ -224,6 +226,14 @@ namespace ler
         vk::PipelineCache pipelineCache;
     };
 
+    struct TrackedCmd
+    {
+        vk::UniqueCommandPool pool;
+        vk::CommandBuffer cmd;
+    };
+
+    using TrackedCmdPtr = std::shared_ptr<TrackedCmd>;
+
     class LerContext
     {
     public:
@@ -234,16 +244,17 @@ namespace ler
         // Buffer
         void destroyBuffer(Buffer& buffer);
         void getFromBuffer(Buffer& buffer, uint32_t* ptr);
-        Buffer createBuffer(uint32_t byteSize, vk::BufferUsageFlags usages = vk::BufferUsageFlagBits());
+        Buffer createBuffer(uint32_t byteSize, vk::BufferUsageFlags usages = vk::BufferUsageFlagBits(), bool staging = false);
         void uploadBuffer(Buffer& staging, const void* src, uint32_t byteSize);
         void copyBuffer(Buffer& staging, Buffer& dst, uint64_t byteSize = VK_WHOLE_SIZE);
-        void copyBufferToTexture(vk::CommandBuffer& cmd, const Buffer& buffer, const TexturePtr& texture);
+        static void copyBufferToTexture(vk::CommandBuffer& cmd, const Buffer& buffer, const TexturePtr& texture);
 
         // Texture
         TexturePtr createTexture(vk::Format format, const vk::Extent2D& extent, vk::SampleCountFlagBits sampleCount, bool isRenderTarget = false);
         TexturePtr createTextureFromNative(vk::Image image, vk::Format format, const vk::Extent2D& extent);
         vk::UniqueSampler createSampler(const vk::SamplerAddressMode& addressMode, bool filter);
         TexturePtr loadTextureFromFile(const fs::path& path);
+        TexturePtr loadTextureFromFileAsync(const fs::path& path);
         TexturePtr loadTextureFromMemory(const unsigned char* buffer, uint32_t size);
         static vk::ImageAspectFlags guessImageAspectFlags(vk::Format format);
 
@@ -271,9 +282,12 @@ namespace ler
         // Execution
         vk::CommandBuffer getCommandBuffer();
         void submitAndWait(vk::CommandBuffer& cmd);
+        TrackedCmdPtr getCommandTracked();
+        void submitTracked(TrackedCmdPtr& tracked);
 
     private:
 
+        void populateTexture(const TexturePtr& texture, vk::Format format, const vk::Extent2D& extent, vk::SampleCountFlagBits sampleCount, bool isRenderTarget = false);
         void mergeSceneBuffer(Scene& scene, Buffer& dest, const aiScene* aiScene, const std::function<bool(aiMesh*)>& predicate, const std::function<void*(aiMesh*)>& provider);
         static vk::PresentModeKHR chooseSwapPresentMode(const std::vector<vk::PresentModeKHR>& availablePresentModes, bool vSync);
         static vk::SurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& availableFormats);
@@ -283,14 +297,19 @@ namespace ler
         vk::Format chooseDepthFormat();
         uint32_t loadTexture(Scene& scene, const aiScene* aiScene, const aiString& filename, const fs::path& path);
 
-        std::mutex m_mutex;
+        LerSettings m_settings;
+        std::mutex m_mutexCmd;
+        std::mutex m_mutexQueue;
+        tf::Executor m_executor;
         vk::PhysicalDevice m_physicalDevice;
         vk::Device m_device;
         vk::Queue m_queue;
+        vk::Queue m_transfer;
         vma::Allocator m_allocator;
         vk::PipelineCache m_pipelineCache;
         vk::UniqueCommandPool m_commandPool;
         std::list<vk::CommandBuffer> m_commandBuffersPool;
+        std::list<TrackedCmdPtr> m_commandTracker;
 
         std::vector<TexturePtr> m_textures;
         std::map<std::string, uint64_t> m_cache;

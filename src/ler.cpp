@@ -31,12 +31,13 @@ namespace ler
              {"inColor"}
      }};
 
-    LerContext::LerContext(const LerSettings& settings)
+    LerContext::LerContext(const LerSettings& settings) : m_settings(settings)
     {
         m_device = settings.device;
         m_pipelineCache = settings.pipelineCache;
         m_physicalDevice = settings.physicalDevice;
         m_queue = settings.device.getQueue(settings.graphicsQueueFamily, 0);
+        m_transfer = settings.device.getQueue(settings.graphicsQueueFamily, 1);
 
         // Create VMA Allocator
         vma::AllocatorCreateInfo allocatorInfo = {};
@@ -59,9 +60,6 @@ namespace ler
                 m_allocator.destroyImage(tex->handle, tex->allocation);
         }
 
-        //for(auto& buf : m_buffers)
-            //m_allocator.destroyBuffer(buf.handle, buf.allocation);
-
         m_allocator.destroy();
     }
 
@@ -72,7 +70,7 @@ namespace ler
         buffer.handle = nullptr;
     }
 
-    Buffer LerContext::createBuffer(uint32_t byteSize, vk::BufferUsageFlags usages)
+    Buffer LerContext::createBuffer(uint32_t byteSize, vk::BufferUsageFlags usages, bool staging)
     {
         Buffer buffer;
         vk::BufferUsageFlags usageFlags = vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst;
@@ -83,7 +81,7 @@ namespace ler
         buffer.info.setSharingMode(vk::SharingMode::eExclusive);
 
         vma::AllocationCreateInfo allocInfo = {};
-        allocInfo.usage = vma::MemoryUsage::eCpuOnly;
+        allocInfo.usage = staging ? vma::MemoryUsage::eCpuOnly : vma::MemoryUsage::eGpuOnly;
 
         auto [handle, allocation] = m_allocator.createBuffer(buffer.info, allocInfo);
 
@@ -214,9 +212,8 @@ namespace ler
         }
     }
 
-    TexturePtr LerContext::createTexture(vk::Format format, const vk::Extent2D& extent, vk::SampleCountFlagBits sampleCount, bool isRenderTarget)
+    void LerContext::populateTexture(const TexturePtr& texture, vk::Format format, const vk::Extent2D& extent, vk::SampleCountFlagBits sampleCount, bool isRenderTarget)
     {
-        auto texture = std::make_shared<Texture>();
         vma::AllocationCreateInfo allocInfo = {};
         allocInfo.usage = vma::MemoryUsage::eGpuOnly;
 
@@ -244,7 +241,12 @@ namespace ler
         createInfo.setFormat(format);
         createInfo.setSubresourceRange(vk::ImageSubresourceRange(guessImageAspectFlags(format), 0, 1, 0, 1));
         texture->view = m_device.createImageViewUnique(createInfo);
+    }
 
+    TexturePtr LerContext::createTexture(vk::Format format, const vk::Extent2D& extent, vk::SampleCountFlagBits sampleCount, bool isRenderTarget)
+    {
+        auto texture = std::make_shared<Texture>();
+        populateTexture(texture, format, extent, sampleCount, isRenderTarget);
         m_textures.push_back(texture);
         return texture;
     }
@@ -992,7 +994,7 @@ namespace ler
         unsigned char* image = stbi_load(path.string().c_str(), &w, &h, &c, STBI_rgb_alpha);
         size_t imageSize = w * h * 4;
 
-        auto staging = createBuffer(imageSize);
+        auto staging = createBuffer(imageSize, vk::BufferUsageFlags(), true);
         uploadBuffer(staging, image, imageSize);
 
         auto texture = createTexture(vk::Format::eR8G8B8A8Unorm, vk::Extent2D(w, h), vk::SampleCountFlagBits::e1);
@@ -1005,6 +1007,35 @@ namespace ler
         return texture;
     }
 
+    TexturePtr LerContext::loadTextureFromFileAsync(const fs::path& path)
+    {
+        if(path.extension() == ".ktx" || path.extension() == ".dds")
+            throw std::runtime_error("Can't load image with extension " + path.extension().string());
+
+        auto texture = std::make_shared<Texture>();
+
+        m_executor.silent_async([=, this](){
+            int w, h, c;
+            unsigned char* image = stbi_load(path.string().c_str(), &w, &h, &c, STBI_rgb_alpha);
+            size_t imageSize = w * h * 4;
+
+            populateTexture(texture, vk::Format::eR8G8B8A8Unorm, vk::Extent2D(w, h), vk::SampleCountFlagBits::e1);
+
+            auto staging = createBuffer(imageSize, vk::BufferUsageFlags(), true);
+            uploadBuffer(staging, image, imageSize);
+
+            auto tracked = getCommandTracked();
+            copyBufferToTexture(tracked->cmd, staging, texture);
+            submitTracked(tracked);
+
+            stbi_image_free(image);
+            m_allocator.destroyBuffer(staging.handle, staging.allocation);
+        });
+
+        m_textures.push_back(texture);
+        return texture;
+    }
+
     TexturePtr LerContext::loadTextureFromMemory(const unsigned char* buffer, uint32_t size)
     {
         int w, h, c;
@@ -1012,7 +1043,7 @@ namespace ler
         unsigned char* image = stbi_load_from_memory(buffer, static_cast<int>(size), &w, &h, &c, STBI_rgb_alpha);
         size_t imageSize = w * h * 4;
 
-        auto staging = createBuffer(imageSize);
+        auto staging = createBuffer(imageSize, vk::BufferUsageFlags(), true);
         uploadBuffer(staging, image, imageSize);
 
         auto texture = createTexture(vk::Format::eR8G8B8A8Unorm, vk::Extent2D(w, h), vk::SampleCountFlagBits::e1);
@@ -1028,7 +1059,6 @@ namespace ler
     vk::CommandBuffer LerContext::getCommandBuffer()
     {
         vk::CommandBuffer cmd;
-        std::lock_guard lock(m_mutex);
         if (m_commandBuffersPool.empty())
         {
             // Allocate command buffer
@@ -1051,6 +1081,37 @@ namespace ler
         return cmd;
     }
 
+    TrackedCmdPtr LerContext::getCommandTracked()
+    {
+        TrackedCmdPtr tracked;
+        std::lock_guard lock(m_mutexCmd);
+        if (m_commandTracker.empty())
+        {
+            // Create command tracker
+            tracked = std::make_shared<TrackedCmd>();
+            // Create Command Pool
+            auto poolUsage = vk::CommandPoolCreateFlagBits::eResetCommandBuffer | vk::CommandPoolCreateFlagBits::eTransient;
+            tracked->pool = m_device.createCommandPoolUnique({ poolUsage, m_settings.graphicsQueueFamily });
+            // Allocate command buffer
+            auto allocInfo = vk::CommandBufferAllocateInfo();
+            allocInfo.setLevel(vk::CommandBufferLevel::ePrimary);
+            allocInfo.setCommandPool(tracked->pool.get());
+            allocInfo.setCommandBufferCount(1);
+
+            vk::Result res;
+            res = m_device.allocateCommandBuffers(&allocInfo, &tracked->cmd);
+            assert(res == vk::Result::eSuccess);
+        }
+        else
+        {
+            tracked = m_commandTracker.front();
+            m_commandTracker.pop_front();
+        }
+
+        tracked->cmd.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        return tracked;
+    }
+
     void LerContext::submitAndWait(vk::CommandBuffer& cmd)
     {
         cmd.end();
@@ -1058,13 +1119,32 @@ namespace ler
 
         vk::SubmitInfo submitInfo;
         submitInfo.setCommandBuffers(cmd);
+        m_mutexQueue.lock();
         m_queue.submit(submitInfo, fence.get());
+        m_mutexQueue.unlock();
 
         auto res = m_device.waitForFences(fence.get(), true, std::numeric_limits<uint64_t>::max());
         assert(res == vk::Result::eSuccess);
 
-        std::lock_guard lock(m_mutex);
         m_commandBuffersPool.push_back(cmd);
+    }
+
+    void LerContext::submitTracked(TrackedCmdPtr& tracked)
+    {
+        tracked->cmd.end();
+        vk::UniqueFence fence = m_device.createFenceUnique({});
+
+        vk::SubmitInfo submitInfo;
+        submitInfo.setCommandBuffers(tracked->cmd);
+        m_mutexQueue.lock();
+        m_transfer.submit(submitInfo, fence.get());
+        m_mutexQueue.unlock();
+
+        auto res = m_device.waitForFences(fence.get(), true, std::numeric_limits<uint64_t>::max());
+        assert(res == vk::Result::eSuccess);
+
+        std::lock_guard lock(m_mutexCmd);
+        m_commandTracker.push_back(tracked);
     }
 
     uint32_t LerContext::loadTexture(Scene& scene, const aiScene* aiScene, const aiString& filename, const fs::path& path)
@@ -1079,7 +1159,7 @@ namespace ler
         if(em == nullptr)
         {
             fs::path f = path.parent_path() / fs::path(key);
-            tex = loadTextureFromFile(f);
+            tex = loadTextureFromFileAsync(f);
         }
         else
         {
@@ -1101,8 +1181,6 @@ namespace ler
             auto* mesh = aiScene->mMeshes[i];
             if(predicate(mesh))
                 std::memcpy(cursor + scene.geometries[i].firstVertex * sizeof(glm::vec3), provider(mesh), scene.geometries[i].countVertex * sizeof(glm::vec3));
-            else
-                std::memset(cursor + scene.geometries[i].firstVertex * sizeof(glm::vec3), 0, scene.geometries[i].countVertex * sizeof(glm::vec3));
         }
         m_allocator.unmapMemory(scene.staging.allocation);
         vk::CommandBuffer cmd = getCommandBuffer();
@@ -1170,6 +1248,11 @@ namespace ler
         }
     }
 
+    glm::mat4 convert(aiMatrix4x4t<ai_real> from)
+    {
+        return glm::make_mat4(from.Transpose()[0]);
+    }
+
     void loadNode(Scene& scene, aiNode* aiNode)
     {
         if(aiNode == nullptr)
@@ -1179,10 +1262,10 @@ namespace ler
         {
             Instance inst;
             const auto& ind = scene.geometries[aiNode->mMeshes[i]];
-            inst.model = glm::make_mat4(aiNode->mTransformation.Transpose()[0]);
+            inst.model = convert(aiNode->mTransformation);
             auto* currentParent = aiNode->mParent;
             while (currentParent) {
-                inst.model = glm::make_mat4(currentParent->mTransformation.Transpose()[0]) * inst.model;
+                inst.model = convert(currentParent->mTransformation) * inst.model;
                 currentParent = currentParent->mParent;
             }
 
@@ -1192,6 +1275,7 @@ namespace ler
 
             inst.matId = ind.materialId;
             scene.instances.push_back(inst);
+            scene.mapping.emplace_back(aiNode->mMeshes[i]);
             scene.commands.emplace_back(ind.countIndex, 1, ind.firstIndex, ind.firstVertex, 0);
             scene.drawCount+= 1;
         }
@@ -1203,6 +1287,32 @@ namespace ler
     {
         lines.push_back(p1);
         lines.push_back(p2);
+    }
+
+    std::array<glm::vec3, 8> createBox(const Scene& scene, size_t i, bool axisAligned)
+    {
+        auto& ins = scene.instances[i];
+        auto& obj = scene.geometries[scene.mapping[i]];
+        glm::vec3 min = axisAligned ? ins.bMin : obj.bMin;
+        glm::vec3 max = axisAligned ? ins.bMax : obj.bMax;
+        std::array<glm::vec3, 8> pts = {
+                glm::vec3(max.x, max.y, max.z),
+                glm::vec3(max.x, max.y, min.z),
+                glm::vec3(max.x, min.y, max.z),
+                glm::vec3(max.x, min.y, min.z),
+                glm::vec3(min.x, max.y, max.z),
+                glm::vec3(min.x, max.y, min.z),
+                glm::vec3(min.x, min.y, max.z),
+                glm::vec3(min.x, min.y, min.z),
+        };
+
+        if(!axisAligned)
+        {
+            for (auto& p: pts)
+                p = glm::vec3(ins.model * glm::vec4(p, 1.f));
+        }
+
+        return pts;
     }
 
     Scene LerContext::fromFile(const fs::path& path)
@@ -1218,6 +1328,8 @@ namespace ler
 
         // Load Materials
         scene.materials.reserve(aiScene->mNumMaterials);
+        // Load Default Texture, Protect out of bound textures array!
+        loadTexture(scene, aiScene, aiString("white.png"), PROJECT_DIR"/assets/");
         for(size_t i = 0; i < aiScene->mNumMaterials; ++i)
         {
             aiString filename;
@@ -1278,7 +1390,7 @@ namespace ler
         size_t indexByteSize = scene.indexCount * sizeof(uint32_t);
         size_t vertexByteSize = scene.vertexCount * sizeof(glm::vec3);
         auto cmdUsage = vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eStorageBuffer;
-        scene.staging = createBuffer(std::max(indexByteSize, vertexByteSize));
+        scene.staging = createBuffer(std::max(indexByteSize, vertexByteSize), vk::BufferUsageFlags(), true);
         scene.indexBuffer = createBuffer(indexByteSize, vk::BufferUsageFlagBits::eIndexBuffer);
         scene.vertexBuffer = createBuffer(vertexByteSize, vk::BufferUsageFlagBits::eVertexBuffer);
         scene.normalBuffer = createBuffer(vertexByteSize, vk::BufferUsageFlagBits::eVertexBuffer);
@@ -1336,18 +1448,9 @@ namespace ler
 
         std::vector<glm::vec3> lines;
         lines.reserve(5000);
-        for(const auto& obj : scene.instances)
+        for(size_t i = 0; i < scene.instances.size(); ++i)
         {
-            std::array<glm::vec3, 8> pts = {
-                glm::vec3(obj.bMax.x, obj.bMax.y, obj.bMax.z),
-                glm::vec3(obj.bMax.x, obj.bMax.y, obj.bMin.z),
-                glm::vec3(obj.bMax.x, obj.bMin.y, obj.bMax.z),
-                glm::vec3(obj.bMax.x, obj.bMin.y, obj.bMin.z),
-                glm::vec3(obj.bMin.x, obj.bMax.y, obj.bMax.z),
-                glm::vec3(obj.bMin.x, obj.bMax.y, obj.bMin.z),
-                glm::vec3(obj.bMin.x, obj.bMin.y, obj.bMax.z),
-                glm::vec3(obj.bMin.x, obj.bMin.y, obj.bMin.z),
-            };
+            auto pts = createBox(scene, i, false);
 
             addLine(lines, pts[0], pts[1]);
             addLine(lines, pts[2], pts[3]);
@@ -1371,6 +1474,7 @@ namespace ler
         copyBuffer(scene.staging, scene.aabbBuffer, byteSize);
         scene.lineCount = lines.size();
 
+        m_executor.wait_for_all();
         return scene;
     }
 
