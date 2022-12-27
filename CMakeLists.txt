@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(minimalRT)
+project(minimalLER)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
@@ -48,5 +48,5 @@ set(IMGUI
     "libs/ImGuizmo/ImGuizmo.cpp"
 )
 
-add_executable(minimalRT src/main.cpp src/ler.hpp src/ler.cpp src/format.cpp src/camera.h ${IMGUI})
-target_link_libraries(minimalRT Vulkan::Vulkan ${CONAN_LIBS} spirv-reflect-static)
+add_executable(minimalLER src/main.cpp src/ler.hpp src/ler.cpp src/format.cpp src/camera.h ${IMGUI})
+target_link_libraries(minimalLER Vulkan::Vulkan ${CONAN_LIBS} spirv-reflect-static)
