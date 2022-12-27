@@ -7,7 +7,7 @@ with Compute Frustum Culling (GPU), developed with Vulkan-Hpp.
 ## UI
 ZQSD: Camera movement  
 Space: Lock/Unlock mouse  
-Ctrl: Unselect light
+Ctrl: Unselect light  
 Escape: Quit
 
 ## Build
@@ -17,7 +17,7 @@ Contains submodules, clone with recursive:
 git clone --recursive https://github.com/Loulfy/minimalRT
 ```  
 
-### Windows
+### Windows (tested with Visual Studio Community 2022)
 
 ```powershell  
 conan install .. --build=missing  
