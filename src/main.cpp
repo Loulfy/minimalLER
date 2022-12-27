@@ -178,7 +178,7 @@ int main()
     config.graphicsQueueFamily = graphicsQueueFamily;
     ler::LerContext engine(config);
 
-    auto scene = engine.fromFile("C:/Users/loria/glTF-Sample-Models/2.0/Sponza/glTF/Sponza.gltf");
+    auto scene = engine.fromFile(ASSETS / "sponza" / "Sponza.gltf");
     //auto scene = engine.fromFile(ASSETS / "Lantern.glb");
 
     std::vector<ler::Light> lighting;
