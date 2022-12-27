@@ -223,6 +223,7 @@ namespace ler
         vk::PhysicalDevice physicalDevice;
         vk::Device device;
         uint32_t graphicsQueueFamily = UINT32_MAX;
+        uint32_t transferQueueFamily = UINT32_MAX;
         vk::PipelineCache pipelineCache;
     };
 

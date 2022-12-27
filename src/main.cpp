@@ -106,9 +106,7 @@ int main()
 
     // Pick First GPU
     auto physicalDevice = instance->enumeratePhysicalDevices().front();
-    auto test = instance->enumeratePhysicalDevices();
-    for(auto& phy : test)
-        std::cout << phy.getProperties().deviceName << std::endl;
+    std::cout << "GPU: " << physicalDevice.getProperties().deviceName << std::endl;
 
     // Device Features
     auto features = physicalDevice.getFeatures();
@@ -120,12 +118,27 @@ int main()
     });
 
     uint32_t graphicsQueueFamily = std::distance(queueFamilies.begin(), family);
+    uint32_t transferQueueFamily = UINT32_MAX;
+
+    // Find Transfer Queue (for parallel command)
+    for(size_t i = 0; i < queueFamilies.size(); ++i)
+    {
+        if(queueFamilies[i].queueCount > 0 && queueFamilies[i].queueFlags & vk::QueueFlagBits::eTransfer && graphicsQueueFamily != i)
+        {
+            transferQueueFamily = i;
+            break;
+        }
+    }
 
     // Create queues
-    float queuePriority[] = {1.0f, 0.5f};
+    float queuePriority = 1.0f;
     std::initializer_list<vk::DeviceQueueCreateInfo> queueCreateInfos = {
-        { {}, graphicsQueueFamily, 2, queuePriority }
+        { {}, graphicsQueueFamily, 1, &queuePriority },
+        { {}, transferQueueFamily, 1, &queuePriority },
     };
+
+    for(auto& q : queueCreateInfos)
+        std::cout << "Queue Family " << q.queueFamilyIndex << ": " << vk::to_string(queueFamilies[q.queueFamilyIndex].queueFlags) << std::endl;
 
     // Create Device
     vk::DeviceCreateInfo deviceInfo;
@@ -176,6 +189,7 @@ int main()
     config.physicalDevice = physicalDevice;
     config.pipelineCache = pipelineCache.get();
     config.graphicsQueueFamily = graphicsQueueFamily;
+    config.transferQueueFamily = transferQueueFamily;
     ler::LerContext engine(config);
 
     auto scene = engine.fromFile(ASSETS / "sponza" / "Sponza.gltf");

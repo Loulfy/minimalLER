@@ -37,7 +37,7 @@ namespace ler
         m_pipelineCache = settings.pipelineCache;
         m_physicalDevice = settings.physicalDevice;
         m_queue = settings.device.getQueue(settings.graphicsQueueFamily, 0);
-        m_transfer = settings.device.getQueue(settings.graphicsQueueFamily, 1);
+        m_transfer = settings.device.getQueue(settings.transferQueueFamily, 0);
 
         // Create VMA Allocator
         vma::AllocatorCreateInfo allocatorInfo = {};
@@ -145,7 +145,7 @@ namespace ler
         // prepare texture to color layout
         std::vector<vk::ImageMemoryBarrier> imageBarriersStop;
         beforeStageFlags = vk::PipelineStageFlagBits::eTransfer;
-        afterStageFlags = vk::PipelineStageFlagBits::eFragmentShader;
+        afterStageFlags = vk::PipelineStageFlagBits::eAllCommands; //eFragmentShader
         imageBarriersStop.emplace_back(
             vk::AccessFlagBits::eTransferWrite,
             vk::AccessFlagBits::eShaderRead,
@@ -1091,7 +1091,7 @@ namespace ler
             tracked = std::make_shared<TrackedCmd>();
             // Create Command Pool
             auto poolUsage = vk::CommandPoolCreateFlagBits::eResetCommandBuffer | vk::CommandPoolCreateFlagBits::eTransient;
-            tracked->pool = m_device.createCommandPoolUnique({ poolUsage, m_settings.graphicsQueueFamily });
+            tracked->pool = m_device.createCommandPoolUnique({ poolUsage, m_settings.transferQueueFamily });
             // Allocate command buffer
             auto allocInfo = vk::CommandBufferAllocateInfo();
             allocInfo.setLevel(vk::CommandBufferLevel::ePrimary);
