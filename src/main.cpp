@@ -84,7 +84,7 @@ int main()
         "VK_LAYER_KHRONOS_validation"
     };
 
-    std::initializer_list<const char*> devices = {
+    std::vector<const char*> devices = {
         VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
         VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,
         // VULKAN MEMORY ALLOCATOR
@@ -95,8 +95,6 @@ int main()
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         // RAY TRACING
         VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
-        VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
-        VK_KHR_RAY_QUERY_EXTENSION_NAME,
         //VK_EXT_DEBUG_MARKER_EXTENSION_NAME
     };
 
@@ -122,6 +120,12 @@ int main()
 
     bool supportRayTracing = supportedExtensionSet.contains(VK_KHR_RAY_QUERY_EXTENSION_NAME);
     std::cout << "Support Ray Tracing: " << std::boolalpha << supportRayTracing << std::endl;
+    
+    if(supportRayTracing)
+    {
+        devices.emplace_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        devices.emplace_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+    }
 
     // Device Features
     auto features = physicalDevice.getFeatures();
