@@ -11,6 +11,8 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #include <imgui_impl_glfw.h>
 #include <ImGuizmo.h>
 
+#include <rtxmu/VkAccelStructManager.h>
+
 #include "camera.h"
 
 static const fs::path ASSETS = fs::path(PROJECT_DIR) / "assets";
@@ -84,18 +86,24 @@ int main()
 
     std::initializer_list<const char*> devices = {
         VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
-        VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
-        //VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
-        //VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
         VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,
+        // VULKAN MEMORY ALLOCATOR
+        VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
+        VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
+        VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,
+        // SWAP CHAIN
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        // RAY TRACING
+        VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+        VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+        VK_KHR_RAY_QUERY_EXTENSION_NAME,
         //VK_EXT_DEBUG_MARKER_EXTENSION_NAME
     };
 
     // Create instance
     vk::ApplicationInfo appInfo;
     appInfo.setApiVersion(VK_API_VERSION_1_3);
-    appInfo.setPEngineName("minimalKS");
+    appInfo.setPEngineName("minimalLER");
 
     vk::InstanceCreateInfo instInfo;
     instInfo.setPApplicationInfo(&appInfo);
@@ -107,6 +115,13 @@ int main()
     // Pick First GPU
     auto physicalDevice = instance->enumeratePhysicalDevices().front();
     std::cout << "GPU: " << physicalDevice.getProperties().deviceName << std::endl;
+
+    std::set<std::string> supportedExtensionSet;
+    for(auto& extProp : physicalDevice.enumerateDeviceExtensionProperties())
+        supportedExtensionSet.insert(extProp.extensionName);
+
+    bool supportRayTracing = supportedExtensionSet.contains(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+    std::cout << "Support Ray Tracing: " << std::boolalpha << supportRayTracing << std::endl;
 
     // Device Features
     auto features = physicalDevice.getFeatures();
@@ -129,6 +144,9 @@ int main()
             break;
         }
     }
+
+    if(transferQueueFamily == UINT32_MAX)
+        throw std::runtime_error("No transfer queue available");
 
     // Create queues
     float queuePriority = 1.0f;
@@ -164,10 +182,11 @@ int main()
     vulkan12Features.setDescriptorBindingVariableDescriptorCount(true);
     vulkan12Features.setShaderSampledImageArrayNonUniformIndexing(true);
     vk::StructureChain<vk::DeviceCreateInfo,
-    /*vk::PhysicalDeviceRayTracingPipelineFeaturesKHR,
-    vk::PhysicalDeviceAccelerationStructureFeaturesKHR,*/
+    vk::PhysicalDeviceRayQueryFeaturesKHR,
+    /*vk::PhysicalDeviceRayTracingPipelineFeaturesKHR,*/
+    vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
     vk::PhysicalDeviceVulkan11Features,
-    vk::PhysicalDeviceVulkan12Features> createInfoChain(deviceInfo, /*{false}, {false},*/ vulkan11Features, vulkan12Features);
+    vk::PhysicalDeviceVulkan12Features> createInfoChain(deviceInfo, {supportRayTracing}, {supportRayTracing}, /*{false},*/ vulkan11Features, vulkan12Features);
     auto device = physicalDevice.createDeviceUnique(createInfoChain.get<vk::DeviceCreateInfo>());
     VULKAN_HPP_DEFAULT_DISPATCHER.init(device.get());
 
@@ -293,7 +312,10 @@ int main()
     // SECOND PASS (Composition)
     std::vector<ler::ShaderPtr> deferredShaders;
     deferredShaders.push_back(engine.createShader(ASSETS / "shaders" / "quad.vert.spv"));
-    deferredShaders.push_back(engine.createShader(ASSETS / "shaders" / "deferred.frag.spv"));
+    if(supportRayTracing)
+        deferredShaders.push_back(engine.createShader(ASSETS / "shaders" / "deferred_shadow.frag.spv"));
+    else
+        deferredShaders.push_back(engine.createShader(ASSETS / "shaders" / "deferred.frag.spv"));
 
     info.subPass = 1;
     info.textureCount = 0;
@@ -316,6 +338,14 @@ int main()
     vk::DescriptorSet inputLight;
     inputLight = deferred->createDescriptorSet(device.get(), 1);
     engine.updateStorage(inputLight, 0, lightBuffer, 256, true);
+
+    vk::DescriptorSet inputTLAS;
+    if(supportRayTracing)
+    {
+        auto tlas = engine.convertSceneToTLAS(scene);
+        inputTLAS = deferred->createDescriptorSet(device.get(), 2);
+        engine.updateAccelerationStructure(inputTLAS, 0, tlas);
+    }
 
     // THIRD PASS (Bounding Box)
     std::vector<ler::ShaderPtr> aabbShaders;
@@ -363,6 +393,7 @@ int main()
     uint32_t numVisibleMeshes = 0;
     int node_clicked = -1;
     glm::mat4 trans = glm::mat4(1.f);
+    bool showShadow = supportRayTracing;
     while(!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
@@ -420,6 +451,7 @@ int main()
         cmd.bindPipeline(deferred->bindPoint, deferred->handle.get());
         cmd.bindDescriptorSets(deferred->bindPoint, deferred->pipelineLayout.get(), 0, inputColor[swapChainIndex], nullptr);
         cmd.bindDescriptorSets(deferred->bindPoint, deferred->pipelineLayout.get(), 1, inputLight, nullptr);
+        if(supportRayTracing) cmd.bindDescriptorSets(deferred->bindPoint, deferred->pipelineLayout.get(), 2, inputTLAS, nullptr);
         cmd.pushConstants(deferred->pipelineLayout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(ler::DeferredConstant), &defConstant);
         cmd.draw(4, 1, 0, 0);
 
@@ -457,6 +489,11 @@ int main()
         proj[1][1] *= -1;
 
         ImGui::Checkbox("Show Bounding Box", &showAABB);
+        if(supportRayTracing)
+        {
+            if(ImGui::Checkbox("Show RT Shadow", &showShadow))
+                defConstant.shadowMode = showShadow ? 1 : 0;
+        }
         ImGui::Text("Visible Meshes: %d", numVisibleMeshes);
         ImGui::Text("Light Count: %zu", lighting.size());
         ImGui::AlignTextToFramePadding();

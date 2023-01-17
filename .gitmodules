@@ -10,3 +10,6 @@
 [submodule "libs/ImGuizmo"]
 	path = libs/ImGuizmo
 	url = https://github.com/CedricGuillemet/ImGuizmo
+[submodule "libs/RTXMU"]
+	path = libs/RTXMU
+	url = https://github.com/NVIDIAGameWorks/RTXMU

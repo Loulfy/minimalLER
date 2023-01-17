@@ -15,6 +15,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/string_cast.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <rtxmu/VkAccelStructManager.h>
 #include <taskflow/taskflow.hpp>
 
 #include <set>
@@ -167,6 +168,7 @@ namespace ler
         alignas(16) glm::vec3 viewPos = glm::vec3(1.f);
         alignas(4) glm::uint viewMode = 0;
         alignas(4) glm::uint lightCount = 1;
+        alignas(4) glm::uint shadowMode = 1;
     };
 
     struct SceneConstant
@@ -200,6 +202,8 @@ namespace ler
         Buffer indirectBuffer;
         Buffer instanceBuffer;
         Buffer materialBuffer;
+        Buffer transformBuffer;
+        Buffer tlasBuffer;
 
         Buffer aabbBuffer;
 
@@ -272,6 +276,7 @@ namespace ler
         void updateSampler(vk::DescriptorSet descriptorSet, uint32_t binding, vk::Sampler& sampler, const std::vector<TexturePtr>& textures);
         void updateStorage(vk::DescriptorSet descriptorSet, uint32_t binding, const Buffer& buffer, uint64_t byteSize, bool uniform = false);
         void updateAttachment(vk::DescriptorSet descriptorSet, uint32_t binding, const TexturePtr& texture);
+        void updateAccelerationStructure(vk::DescriptorSet descriptorSet, uint32_t binding, vk::AccelerationStructureKHR tlas);
 
         // Scene
         Scene fromFile(const fs::path& path);
@@ -285,6 +290,11 @@ namespace ler
         void submitAndWait(vk::CommandBuffer& cmd);
         TrackedCmdPtr getCommandTracked();
         void submitTracked(TrackedCmdPtr& tracked);
+
+        // Ray tracing
+        void sceneToBlas(const Scene& scene, std::vector<vk::AccelerationStructureBuildRangeInfoKHR>& ranges, std::vector<vk::AccelerationStructureGeometryKHR>& geometries);
+        void sceneToTlas(Scene& scene, vk::AccelerationStructureKHR blas, std::vector<vk::AccelerationStructureGeometryKHR>& geometries);
+        vk::AccelerationStructureKHR convertSceneToTLAS(Scene& scene);
 
     private:
 
@@ -314,6 +324,8 @@ namespace ler
 
         std::vector<TexturePtr> m_textures;
         std::map<std::string, uint64_t> m_cache;
+        std::vector<uint64_t> m_asIds;
+        std::unique_ptr<rtxmu::VkAccelStructManager> m_rtxMemUtil;
     };
 }
 

@@ -45,6 +45,7 @@ namespace ler
         allocatorInfo.physicalDevice = settings.physicalDevice;
         allocatorInfo.instance = settings.instance;
         allocatorInfo.device = settings.device;
+        allocatorInfo.setFlags(vma::AllocatorCreateFlagBits::eBufferDeviceAddress);
         m_allocator = vma::createAllocator(allocatorInfo);
 
         // Create Command Pool
@@ -75,6 +76,8 @@ namespace ler
         Buffer buffer;
         vk::BufferUsageFlags usageFlags = vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst;
         usageFlags |= usages;
+        usageFlags |= vk::BufferUsageFlagBits::eShaderDeviceAddress;
+        usageFlags |= vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR;
         buffer.info = vk::BufferCreateInfo();
         buffer.info.setSize(byteSize);
         buffer.info.setUsage(usageFlags);
@@ -985,6 +988,26 @@ namespace ler
         m_device.updateDescriptorSets(descriptorWrites, nullptr);
     }
 
+    void LerContext::updateAccelerationStructure(vk::DescriptorSet descriptorSet, uint32_t binding, vk::AccelerationStructureKHR tlas)
+    {
+        std::vector<vk::WriteDescriptorSet> descriptorWrites;
+        std::vector<vk::DescriptorImageInfo> descriptorImageInfo;
+
+        auto descriptorWriteInfo = vk::WriteDescriptorSet();
+        descriptorWriteInfo.setDescriptorType(vk::DescriptorType::eAccelerationStructureKHR);
+        descriptorWriteInfo.setDstBinding(binding);
+        descriptorWriteInfo.setDstSet(descriptorSet);
+        descriptorWriteInfo.setDescriptorCount(1);
+
+        auto descASInfo = vk::WriteDescriptorSetAccelerationStructureKHR();
+        descASInfo.setAccelerationStructureCount(1);
+        descASInfo.setPAccelerationStructures(&tlas);
+
+        descriptorWriteInfo.setPNext(&descASInfo);
+        descriptorWrites.push_back(descriptorWriteInfo);
+        m_device.updateDescriptorSets(descriptorWrites, nullptr);
+    }
+
     TexturePtr LerContext::loadTextureFromFile(const fs::path& path)
     {
         int w, h, c;
@@ -1145,6 +1168,139 @@ namespace ler
 
         std::lock_guard lock(m_mutexCmd);
         m_commandTracker.push_back(tracked);
+    }
+
+    void LerContext::sceneToBlas(const Scene& scene, std::vector<vk::AccelerationStructureBuildRangeInfoKHR>& ranges, std::vector<vk::AccelerationStructureGeometryKHR>& geometries)
+    {
+        for(size_t i = 0; i < scene.instances.size(); ++i)
+        {
+            auto& mesh = scene.geometries[scene.mapping[i]];
+            vk::AccelerationStructureGeometryKHR geom;
+            geom.setFlags(vk::GeometryFlagBitsKHR::eOpaque);
+            geom.setGeometryType(vk::GeometryTypeKHR::eTriangles);
+
+            vk::BufferDeviceAddressInfoKHR info{};
+            vk::AccelerationStructureGeometryTrianglesDataKHR triangles;
+            triangles.vertexFormat             = vk::Format::eR32G32B32Sfloat;  // vec3 vertex position data.
+            info.setBuffer(scene.vertexBuffer.handle);
+            triangles.vertexData.deviceAddress = m_device.getBufferAddressKHR(info);
+            triangles.vertexStride             = sizeof(float) * 3;
+            // Describe index data (32-bit unsigned int)
+            triangles.indexType               = vk::IndexType::eUint32;
+            info.setBuffer(scene.indexBuffer.handle);
+            triangles.indexData.deviceAddress = m_device.getBufferAddressKHR(info);
+            // Indicate identity transform by setting transformData to null device pointer.
+            info.setBuffer(scene.transformBuffer.handle);
+            triangles.transformData.deviceAddress = m_device.getBufferAddressKHR(info);
+            triangles.maxVertex = mesh.countIndex;
+
+            vk::AccelerationStructureBuildRangeInfoKHR offset;
+            offset.setFirstVertex(mesh.firstVertex);
+            offset.setPrimitiveCount(mesh.countIndex/3);
+            offset.setPrimitiveOffset(mesh.firstIndex*sizeof(uint32_t));
+            offset.setTransformOffset(i*sizeof(glm::mat4));
+            ranges.push_back(offset);
+
+            geom.setGeometry(triangles);
+            geometries.emplace_back(geom);
+        }
+    }
+
+    void LerContext::sceneToTlas(Scene& scene, vk::AccelerationStructureKHR blas, std::vector<vk::AccelerationStructureGeometryKHR>& geometries)
+    {
+        vk::AccelerationStructureDeviceAddressInfoKHR info{};
+        info.setAccelerationStructure(blas);
+        auto deviceAddress = m_device.getAccelerationStructureAddressKHR(info);
+
+        vk::AccelerationStructureGeometryKHR geom;
+        geom.setFlags(vk::GeometryFlagBitsKHR::eOpaque);
+        geom.setGeometryType(vk::GeometryTypeKHR::eInstances);
+        vk::AccelerationStructureGeometryInstancesDataKHR inst;
+        inst.setArrayOfPointers(false);
+
+        vk::AccelerationStructureInstanceKHR instance;
+        instance.setAccelerationStructureReference(deviceAddress);
+        instance.setMask(0xFF);
+        instance.setFlags(vk::GeometryInstanceFlagBitsKHR::eTriangleFacingCullDisable | vk::GeometryInstanceFlagBitsKHR::eForceOpaque);
+        VkTransformMatrixKHR transformMatrix = {
+                1.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 1.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 1.0f, 0.0f
+        };
+        instance.setTransform(transformMatrix);
+
+        scene.tlasBuffer = createBuffer(sizeof(vk::AccelerationStructureInstanceKHR), vk::BufferUsageFlags(), true);
+        uploadBuffer(scene.tlasBuffer, &instance, sizeof(vk::AccelerationStructureInstanceKHR));
+
+        vk::BufferDeviceAddressInfoKHR inf{};
+        inf.setBuffer(scene.tlasBuffer.handle);
+
+        inst.setData(m_device.getBufferAddressKHR(inf));
+
+        geom.setGeometry(inst);
+        geometries.emplace_back(geom);
+    }
+
+    vk::AccelerationStructureKHR LerContext::convertSceneToTLAS(Scene& scene)
+    {
+        // Init AS Memory Util
+        m_rtxMemUtil = std::make_unique<rtxmu::VkAccelStructManager>(m_settings.instance, m_settings.device, m_settings.physicalDevice);
+        m_rtxMemUtil->Initialize(8388608);
+
+        std::vector<vk::AccelerationStructureBuildRangeInfoKHR> ranges;
+        std::vector<vk::AccelerationStructureGeometryKHR> geometries;
+        sceneToBlas(scene, ranges, geometries);
+
+        vk::AccelerationStructureBuildGeometryInfoKHR buildGeometryInfo{};
+        buildGeometryInfo.setType(vk::AccelerationStructureTypeKHR::eBottomLevel);
+        buildGeometryInfo.setFlags(vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace | vk::BuildAccelerationStructureFlagBitsKHR::eAllowCompaction);
+        buildGeometryInfo.setGeometries(geometries);
+
+        std::vector<uint32_t> maxPrimCount;
+        for(auto& r : ranges)
+            maxPrimCount.emplace_back(r.primitiveCount);
+
+        auto rangeInfo = const_cast<const uint32_t*>(maxPrimCount.data());
+        auto geomInfo = const_cast<const vk::AccelerationStructureBuildRangeInfoKHR*>(ranges.data());
+
+        auto cmd = getCommandBuffer();
+        m_rtxMemUtil->PopulateBuildCommandList(cmd, &buildGeometryInfo, &geomInfo, &rangeInfo, 1, m_asIds);
+        // Receives acceleration structure inputs and places memory barriers for them
+        m_rtxMemUtil->PopulateUAVBarriersCommandList(cmd, m_asIds);
+        // Performs copies to bring over any compaction size data
+        m_rtxMemUtil->PopulateCompactionSizeCopiesCommandList(cmd, m_asIds);
+
+        submitAndWait(cmd);
+
+        // Acceleration structures that have finished building on the GPU can now be queued to perform compaction
+        cmd = getCommandBuffer();
+        m_rtxMemUtil->PopulateCompactionCommandList(cmd, m_asIds);
+        submitAndWait(cmd);
+
+        m_rtxMemUtil->GarbageCollection(m_asIds);
+
+        // Get build BLAS
+        auto blas = m_rtxMemUtil->GetAccelerationStruct(m_asIds.front());
+
+        geometries.clear();
+        sceneToTlas(scene, blas, geometries);
+        buildGeometryInfo = vk::AccelerationStructureBuildGeometryInfoKHR();
+        buildGeometryInfo.setType(vk::AccelerationStructureTypeKHR::eTopLevel);
+        buildGeometryInfo.setFlags(vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace | vk::BuildAccelerationStructureFlagBitsKHR::eAllowCompaction);
+        buildGeometryInfo.setGeometries(geometries);
+
+        maxPrimCount.clear();
+        maxPrimCount.emplace_back(1);
+        rangeInfo = const_cast<const uint32_t*>(maxPrimCount.data());
+        ranges.clear();
+        ranges.emplace_back(vk::AccelerationStructureBuildRangeInfoKHR().setPrimitiveCount(1));
+        geomInfo = const_cast<const vk::AccelerationStructureBuildRangeInfoKHR*>(ranges.data());
+        cmd = getCommandBuffer();
+        m_rtxMemUtil->PopulateBuildCommandList(cmd, &buildGeometryInfo, &geomInfo, &rangeInfo, 1, m_asIds);
+        submitAndWait(cmd);
+
+        // Get build TLAS
+        return m_rtxMemUtil->GetAccelerationStruct(m_asIds.back());
     }
 
     uint32_t LerContext::loadTexture(Scene& scene, const aiScene* aiScene, const aiString& filename, const fs::path& path)
@@ -1476,6 +1632,14 @@ namespace ler
         copyBuffer(scene.staging, scene.aabbBuffer, byteSize);
         scene.lineCount = lines.size();
 
+        byteSize = scene.instances.size()*sizeof(glm::mat4);
+        std::vector<glm::mat4> trans(scene.instances.size());
+        for(size_t i = 0; i < trans.size(); ++i)
+            trans[i] = scene.instances[i].model;
+        scene.transformBuffer = createBuffer(byteSize);
+        uploadBuffer(scene.staging, trans.data(), byteSize);
+        copyBuffer(scene.staging, scene.transformBuffer, byteSize);
+
         m_executor.wait_for_all();
         return scene;
     }
@@ -1492,5 +1656,13 @@ namespace ler
         m_allocator.destroyBuffer(scene.indirectBuffer.handle, scene.indirectBuffer.allocation);
         m_allocator.destroyBuffer(scene.instanceBuffer.handle, scene.instanceBuffer.allocation);
         m_allocator.destroyBuffer(scene.materialBuffer.handle, scene.materialBuffer.allocation);
+        m_allocator.destroyBuffer(scene.transformBuffer.handle, scene.transformBuffer.allocation);
+
+        // No Acceleration Structure
+        if(m_asIds.empty())
+            return; // Pass
+
+        m_rtxMemUtil->RemoveAccelerationStructures(m_asIds);
+        m_allocator.destroyBuffer(scene.tlasBuffer.handle, scene.tlasBuffer.allocation);
     }
 }
