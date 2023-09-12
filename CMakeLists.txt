@@ -13,10 +13,12 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++")
 endif()
 
-include(${CMAKE_BINARY_DIR}/conanbuildinfo.cmake)
-conan_basic_setup()
-
 find_package(Vulkan)
+find_package(Taskflow REQUIRED)
+find_package(assimp REQUIRED)
+find_package(glfw3 REQUIRED)
+find_package(stb REQUIRED)
+find_package(glm REQUIRED)
 
 #add_subdirectory(libs/KickstartRT)
 #include_directories(libs/KickstartRT/include)KickstartRT_core_VULKAN
@@ -51,4 +53,4 @@ set(IMGUI
 )
 
 add_executable(minimalLER src/main.cpp src/ler.hpp src/ler.cpp src/format.cpp src/camera.h ${IMGUI})
-target_link_libraries(minimalLER Vulkan::Vulkan ${CONAN_LIBS} spirv-reflect-static rtxmu)
+target_link_libraries(minimalLER Vulkan::Vulkan glfw assimp::assimp Taskflow::Taskflow glm::glm stb::stb spirv-reflect-static rtxmu)

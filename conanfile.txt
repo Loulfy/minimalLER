@@ -1,9 +1,10 @@
 [requires]
 glfw/3.3.8
-stb/cci.20210910
+stb/cci.20220909
 glm/cci.20220420
 taskflow/3.4.0
 assimp/5.2.2
 
 [generators]
-cmake
+CMakeDeps
+CMakeToolchain
