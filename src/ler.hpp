@@ -250,6 +250,7 @@ namespace ler
         void destroyBuffer(Buffer& buffer);
         void getFromBuffer(Buffer& buffer, uint32_t* ptr);
         Buffer createBuffer(uint32_t byteSize, vk::BufferUsageFlags usages = vk::BufferUsageFlagBits(), bool staging = false);
+        Buffer createBufferWithAlign(uint32_t byteSize, uint64_t minAlign);
         void uploadBuffer(Buffer& staging, const void* src, uint32_t byteSize);
         void copyBuffer(Buffer& staging, Buffer& dst, uint64_t byteSize = VK_WHOLE_SIZE);
         static void copyBufferToTexture(vk::CommandBuffer& cmd, const Buffer& buffer, const TexturePtr& texture);

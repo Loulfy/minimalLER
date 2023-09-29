@@ -85,9 +85,26 @@ namespace ler
 
         vma::AllocationCreateInfo allocInfo = {};
         allocInfo.usage = staging ? vma::MemoryUsage::eCpuOnly : vma::MemoryUsage::eGpuOnly;
-
         auto [handle, allocation] = m_allocator.createBuffer(buffer.info, allocInfo);
+        buffer.handle = handle;
+        buffer.allocation = allocation;
+        return buffer;
+    }
 
+    Buffer LerContext::createBufferWithAlign(uint32_t byteSize, uint64_t minAlign)
+    {
+        Buffer buffer;
+        vk::BufferUsageFlags usageFlags = vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst;
+        usageFlags |= vk::BufferUsageFlagBits::eShaderDeviceAddress;
+        usageFlags |= vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR;
+        buffer.info = vk::BufferCreateInfo();
+        buffer.info.setSize(byteSize);
+        buffer.info.setUsage(usageFlags);
+        buffer.info.setSharingMode(vk::SharingMode::eExclusive);
+
+        vma::AllocationCreateInfo allocInfo = {};
+        allocInfo.usage = vma::MemoryUsage::eGpuOnly;
+        auto [handle, allocation] = m_allocator.createBufferWithAlignment(buffer.info, allocInfo, minAlign);
         buffer.handle = handle;
         buffer.allocation = allocation;
         return buffer;
@@ -1636,7 +1653,7 @@ namespace ler
         std::vector<glm::mat4> trans(scene.instances.size());
         for(size_t i = 0; i < trans.size(); ++i)
             trans[i] = scene.instances[i].model;
-        scene.transformBuffer = createBuffer(byteSize);
+        scene.transformBuffer = createBufferWithAlign(byteSize, 16);
         uploadBuffer(scene.staging, trans.data(), byteSize);
         copyBuffer(scene.staging, scene.transformBuffer, byteSize);
 

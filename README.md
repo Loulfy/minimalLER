@@ -12,7 +12,7 @@ Ctrl: Unselect light
 Escape: Quit
 
 ## Build
-You need CMake, Conan and VulkanSDK 1.3 to compile.  
+You need CMake, Conan 2 and VulkanSDK 1.3 (261) to compile.  
 Contains submodules, clone with recursive:
 ```bash  
 git clone --recursive https://github.com/Loulfy/minimalLER
@@ -22,7 +22,7 @@ git clone --recursive https://github.com/Loulfy/minimalLER
 
 ```powershell  
 conan install .. --build=missing
-cmake -G "Visual Studio 17" ..
+cmake -G "Visual Studio 17" .. -DCMAKE_TOOLCHAIN_FILE=path\to\conan_toolchain.cmake -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
 cmake --build .
 ```  
 
